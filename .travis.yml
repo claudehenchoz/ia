@@ -1,6 +1,6 @@
 language: cpp
 before_install:
   - sudo apt-get update -qq
-  - sudo apt-get install -y make gcc sdl libsdl1.2-dev libsdl-image1.2-dev libsdl-mixer1.2-dev libsdl-ttf2.0-dev
+  - sudo apt-get install -y make gcc libsdl1.2-dev libsdl-image1.2-dev libsdl-mixer1.2-dev libsdl-ttf2.0-dev
 script:
   - make -j2 VERBOSE=1
