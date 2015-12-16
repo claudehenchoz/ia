@@ -12,4 +12,3 @@ script:
   - make clean
 addons:
   artifacts: true
-  s3_region: "eu-central-1" # defaults to "us-east-1"
