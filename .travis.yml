@@ -9,6 +9,7 @@ script:
   - mv target ia-dev
   - sh pack-release.sh ia-dev
   - rm -rf ia-dev
+  - make clean
 addons:
   artifacts: true
   s3_region: "eu-central-1" # defaults to "us-east-1"
