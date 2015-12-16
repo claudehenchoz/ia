@@ -6,3 +6,9 @@ before_install:
   - sudo apt-get install -y make gcc libsdl1.2-dev libsdl-image1.2-dev libsdl-mixer1.2-dev libsdl-ttf2.0-dev libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev
 script:
   - make -j2 VERBOSE=1
+  - mv target ia-dev
+  - sh pack-release.sh ia-dev
+  - rm -rf ia-dev
+addons:
+  artifacts: true
+  s3_region: "eu-central-1" # defaults to "us-east-1"
