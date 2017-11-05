@@ -1,16 +1,18 @@
-#ifndef AI_H
-#define AI_H
+#ifndef AI_HPP
+#define AI_HPP
 
 #include <vector>
 
-#include "cmn_types.hpp"
-#include "cmn_data.hpp"
+#include "global.hpp"
 
 class Mon;
 
 namespace ai
 {
 
+// -----------------------------------------------------------------------------
+// Things that cost turns for the monster
+// -----------------------------------------------------------------------------
 namespace action
 {
 
@@ -30,23 +32,26 @@ bool step_path(Mon& mon, std::vector<P>& path);
 
 bool step_to_lair_if_los(Mon& mon, const P& lair_p);
 
-} //action
+} // action
 
+// -----------------------------------------------------------------------------
+// Information gathering
+// -----------------------------------------------------------------------------
 namespace info
 {
 
-bool look_become_player_aware(Mon& mon);
+bool look(Mon& mon);
 
-void try_set_path_to_lair_if_no_los(Mon& mon, std::vector<P>& path, const P& lair_p);
+std::vector<P> find_path_to_lair_if_no_los(Mon& mon, const P& lair_p);
 
-void try_set_path_to_leader(Mon& mon, std::vector<P>& path);
+std::vector<P> find_path_to_leader(Mon& mon);
 
-void try_set_path_to_player(Mon& mon, std::vector<P>& path);
+std::vector<P> find_path_to_tgt(Mon& mon);
 
-void set_special_blocked_cells(Mon& mon, bool a[MAP_W][MAP_H]);
+void set_special_blocked_cells(Mon& mon, bool a[map_w][map_h]);
 
-} //info
+} // info
 
-} //ai
+} // ai
 
-#endif
+#endif // AI_HPP

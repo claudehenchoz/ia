@@ -1,102 +1,41 @@
-﻿# Guide for building Infra Arcana
+# Guide for building Infra Arcana
 
-## Which branch	should I build?
-**master** - If you want to try out new features in a relatively stable and bug free state.
+## Fetching the source code
 
-**tags (v15.0, v16.0, etc)** - If you want to build one of the official releases.
+Clone the IA repository on Github:
 
-**develop** - No guarantees. It may not even compile.
+    https://github.com/martin-tornqvist/ia.git
 
-## Fetching source
+## Which branch should I build?
+**develop** - If you want to try out new features early (the develop branch should be relatively stable and bug free, feel free to open Github issues if you encounter bugs or crashes).
 
-If you aren't familiar with using Git, you can download whole source code directly [as compressed archive](https://github.com/InfraArcana/ia/archive/master.zip).
+**tags (v15.0, v16.0, etc)** - If you want to build one of the official releases (note that the build method may be very different for older versions).
 
-## Windows
+## Building Infra Arcana
 
-The instructions below are written and tested for Windows 7.
+Infra Arcana is built with [CMake](https://cmake.org/), which is a build system generator. CMake can generate GNU Makefiles, Code::Blocks projects, Visual Studio solutions, etc for many different platforms. Look for an online tutorial on how to use CMake (some pointers are given below).
 
-### Installing a development environment
+### Unix/Linux/macOS
+You need CMake, build tools (e.g. GNU Make + gcc), as well as SDL2, SDL2-image, and SDL2-mixer. These are the required SDL packages (retrieve them with apt-get for Ubuntu and Linux Mint):
 
-[Download Code::blocks](http://www.codeblocks.org/downloads/binaries): (The MinGW version, e.g. "codeblocks-XX.XXmingw-setup.exe")
+    libsdl2-2.0-0 libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev
 
-Install Code::Blocks
-“*Select type of install*", choose "*Standard*"
+Hint for building:
 
-A window should pop up, prompting for compiler choice. Select the GNU GCC Compiler and make it default.
+    cd <ia directory>
+    mkdir build && cd build
+    cmake ../
+    make ia
 
-"*Yes, associate Code::Blocks with C/C++ file type*"
+NOTE: Building with CMake on macOS is not yet tested (as far as I know) - I would love to hear feedback on success or failures!
 
-Close Code::Blocks -> "*The perspective has changed, save it?*", check "*Don't annoy me again*"
+### Windows
+You need CMake, and some IDE or build tools of your choice (such as [Code::Blocks](http://www.codeblocks.org), or [Visual Studio](https://www.visualstudio.com/)). The Windows version of SDL is included in the repository already, so there is no need to download this.
 
-### Building Infra Arcana
+Run CMake. If you use the graphical interface, then for "Where is the source code?" select the root folder of the ia repo (NOT the "src" folder), and for "Where to build the binaries?" select a folder called "build" in the ia repo (the "build" folder may not actually exist yet, but it doesn't matter, just specify this path). Run "Configure" and "Generate".
 
-Go to the cloned Infra Arcana Git repository folder. Open "*cb_win_project*" (stands for "Code::Blocks Windows project"). Open "*cb_win_project.cbp*".
+You may need to set up some system environment variables to fix errors, depending on which type of project you are generating.
 
-In the top left corner, there should be a button that looks like a yellow cogwheel - to the right of this, there should be a choice for "*Build target*", set this to “*Release*”. Then click the cogwheel button, this will start the build.
+After running CMake, if everything went fine, the project (of the type that you selected) should be available in the "build" folder. Open this project and build the "ia" target.
 
-When the build is done, you should see something like this in the build log:
-
-    Process terminated with status 0 (time)
-    0 errors, 0 warnings
-
-(Don’t mind it too much if there are some warnings)
-
-Next to the cogwheel button is a green arrow button. Click it. The game should run now.
-
-The Infra Arcana executable is put in the “target” folder inside the Git repository folder. If you want, you can copy the ‘target’ folder somewhere else and rename it.
-
-If you get the following error when trying to build:
-
-    ["cb_win_project - Debug" uses an invalid compiler. Probably the toolchain path within the compiler options is not setup correctly?! Skipping... ].
-
-Try going to "*Settings*" -> "*Compiler and debugger*" -> "*Toolchain executables*", then click "*Auto-detect*".
-
-## Linux
-
-The instructions below are written and tested for Ubuntu 12.10
-
-### Building Infra Arcana
-
-You will need build tools and SDL:
-
-    $ sudo apt-get install make gcc sdl libsdl1.2-dev libsdl-image1.2-dev libsdl-mixer1.2-dev libsdl-ttf2.0-dev
-
-Go to the IA repository directory, and type:
-
-    $ make
-
-Go to the “target” folder
-
-Start IA by typing
-
-    $ ./ia
-
-(dot slash ia)
-
-If you want, you can copy the “target” folder somewhere and rename it
-
-## OSX
-
-Some people have successfully built IA on OSX by using the Linux Makefile as it is. Although building on OSX is not “officially supported”, the goal is to keep the project as portable as possible. It should require little extra effort (or no extra effort at all) to build IA on OSX. So go ahead and try ;)
-Please tell of your problems or success at the IA webpage, or email me (Martin) - see contact.txt in the game folder (or assets/contact.txt in the IA repository).
-
-### Building on OS X
-This works on 10.11.1, ymmv.
-
-Install Xcode command line tools.
-
-Install [SDL2.framework](http://www.libsdl.org/download-2.0.php), [SDL2\_image.framework](http://www.libsdl.org/projects/SDL_image/), [SDL2\_mixer.framework](http://www.libsdl.org/projects/SDL_mixer/) in /Library/Frameworks.
-
-Use Makefile\_osx to build:
-
-    $ make -f Makefile_osx install
-
-or, for a "release" build:
-
-    $ make -f Makefile_osx RELEASE=1 install
-
-Run:
-
-    $ cd ./target
-    $ ./ia
-
+For example, if you generated a Code::Blocks project, then in the drop-down target list (near the top of the screen) select the "ia" target. Build by clicking on the yellow cogwheel, then run the game by clicking on the green arrow.

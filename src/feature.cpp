@@ -4,18 +4,17 @@
 #include "actor.hpp"
 #include "actor_player.hpp"
 #include "msg_log.hpp"
-#include "render.hpp"
+#include "io.hpp"
 #include "map_parsing.hpp"
 #include "game_time.hpp"
 #include "map_travel.hpp"
 #include "query.hpp"
-#include "save_handling.hpp"
+#include "saving.hpp"
 #include "popup.hpp"
-#include "utils.hpp"
 #include "map.hpp"
 #include "feature_data.hpp"
 
-const Feature_data_t& Feature::data() const
+const FeatureDataT& Feature::data() const
 {
     return feature_data::data(id());
 }
@@ -30,7 +29,7 @@ void Feature::bump(Actor& actor_bumping)
             {
                 msg_log::add(data().msg_on_player_blocked);
             }
-            else //Actor cannot see
+            else // Actor cannot see
             {
                 msg_log::add(data().msg_on_player_blocked_blind);
             }
@@ -38,14 +37,19 @@ void Feature::bump(Actor& actor_bumping)
     }
 }
 
-void Feature::add_light(bool light[MAP_W][MAP_H]) const
+void Feature::add_light(bool light[map_w][map_h]) const
 {
     (void)light;
 }
 
-bool Feature::can_move_cmn() const
+void Feature::reveal(const Verbosity verbosity)
 {
-    return data().move_rules.can_move_cmn();
+    (void)verbosity;
+}
+
+bool Feature::can_move_common() const
+{
+    return data().move_rules.can_move_common();
 }
 
 bool Feature::can_move(Actor& actor) const
@@ -53,9 +57,15 @@ bool Feature::can_move(Actor& actor) const
     return data().move_rules.can_move(actor);
 }
 
-void Feature::hit(const Dmg_type dmg_type, const Dmg_method dmg_method, Actor* const actor)
+void Feature::hit(const int dmg,
+                  const DmgType dmg_type,
+                  const DmgMethod dmg_method,
+                  Actor* const actor)
 {
-    (void)dmg_type; (void)dmg_method; (void)actor;
+    (void)dmg;
+    (void)dmg_type;
+    (void)dmg_method;
+    (void)actor;
 }
 
 bool Feature::is_sound_passable() const
@@ -88,7 +98,7 @@ char Feature::glyph() const
     return data().glyph;
 }
 
-Tile_id Feature::tile() const
+TileId Feature::tile() const
 {
     return data().tile;
 }
@@ -118,7 +128,7 @@ bool Feature::can_have_item() const
     return data().can_have_item;
 }
 
-Feature_id Feature::id() const
+FeatureId Feature::id() const
 {
     return data().id;
 }

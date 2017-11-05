@@ -1,16 +1,16 @@
 #include "actor_factory.hpp"
 
 #include <algorithm>
-#include <cassert>
 
 #include "actor_mon.hpp"
 #include "actor_player.hpp"
 #include "map.hpp"
-#include "render.hpp"
+#include "io.hpp"
 #include "map_parsing.hpp"
-#include "utils.hpp"
 #include "actor.hpp"
 #include "feature_rigid.hpp"
+#include "init.hpp"
+#include "io.hpp"
 
 namespace actor_factory
 {
@@ -18,235 +18,276 @@ namespace actor_factory
 namespace
 {
 
-Actor* mk_actor_from_id(const Actor_id id)
+Actor* mk_actor_from_id(const ActorId id)
 {
     switch (id)
     {
-    case Actor_id::player:
+    case ActorId::player:
         return new Player();
 
-    case Actor_id::zombie:
-        return new Zombie_claw();
+    case ActorId::zombie:
+        return new ZombieClaw();
 
-    case Actor_id::zombie_axe:
-        return new Zombie_axe();
+    case ActorId::zombie_axe:
+        return new ZombieAxe();
 
-    case Actor_id::bloated_zombie:
-        return new Bloated_zombie();
+    case ActorId::bloated_zombie:
+        return new BloatedZombie();
 
-    case Actor_id::major_clapham_lee:
-        return new Major_clapham_lee();
+    case ActorId::major_clapham_lee:
+        return new MajorClaphamLee();
 
-    case Actor_id::dean_halsey:
-        return new Dean_halsey();
+    case ActorId::dean_halsey:
+        return new DeanHalsey();
 
-    case Actor_id::crawling_intestines:
-        return new Crawling_intestines();
+    case ActorId::crawling_intestines:
+        return new CrawlingIntestines();
 
-    case Actor_id::crawling_hand:
-        return new Crawling_hand();
+    case ActorId::crawling_hand:
+        return new CrawlingHand();
 
-    case Actor_id::thing:
+    case ActorId::thing:
         return new Thing();
 
-    case Actor_id::floating_head:
-        return new Floating_head();
+    case ActorId::floating_skull:
+        return new FloatingSkull();
 
-    case Actor_id::rat:
+    case ActorId::rat:
         return new Rat();
 
-    case Actor_id::rat_thing:
-        return new Rat_thing();
+    case ActorId::rat_thing:
+        return new RatThing();
 
-    case Actor_id::brown_jenkin:
-        return new Brown_jenkin();
+    case ActorId::brown_jenkin:
+        return new BrownJenkin();
 
-    case Actor_id::green_spider:
-        return new Green_spider();
+    case ActorId::green_spider:
+        return new GreenSpider();
 
-    case Actor_id::red_spider:
-        return new Red_spider();
+    case ActorId::red_spider:
+        return new RedSpider();
 
-    case Actor_id::white_spider:
-        return new White_spider();
+    case ActorId::white_spider:
+        return new WhiteSpider();
 
-    case Actor_id::shadow_spider:
-        return new Shadow_spider();
+    case ActorId::shadow_spider:
+        return new ShadowSpider();
 
-    case Actor_id::leng_spider:
-        return new Leng_spider();
+    case ActorId::leng_spider:
+        return new LengSpider();
 
-    case Actor_id::pit_viper:
-        return new Pit_viper();
+    case ActorId::pit_viper:
+        return new PitViper();
 
-    case Actor_id::spitting_cobra:
-        return new Spitting_cobra();
+    case ActorId::spitting_cobra:
+        return new SpittingCobra();
 
-    case Actor_id::black_mamba:
-        return new Black_mamba();
+    case ActorId::black_mamba:
+        return new BlackMamba();
 
-    case Actor_id::fire_hound:
-        return new Fire_hound();
+    case ActorId::fire_hound:
+        return new FireHound();
 
-    case Actor_id::zuul:
+    case ActorId::energy_hound:
+        return new EnergyHound();
+
+    case ActorId::zuul:
         return new Zuul();
 
-    case Actor_id::ghost:
+    case ActorId::ghost:
         return new Ghost();
 
-    case Actor_id::wraith:
+    case ActorId::wraith:
         return new Wraith();
 
-    case Actor_id::phantasm:
+    case ActorId::phantasm:
         return new Phantasm();
 
-    case Actor_id::raven:
+    case ActorId::raven:
         return new Raven();
 
-    case Actor_id::giant_bat:
-        return new Giant_bat();
+    case ActorId::giant_bat:
+        return new GiantBat();
 
-    case Actor_id::cultist:
+    case ActorId::vampire_bat:
+        return new VampireBat();
+
+    case ActorId::abaxu:
+        return new Abaxu();
+
+    case ActorId::cultist:
         return new Cultist();
 
-    case Actor_id::cultist_electric:
-        return new Cultist_electric();
+    case ActorId::bog_tcher:
+        return new BogTcher();
 
-    case Actor_id::cultist_spike_gun:
-        return new Cultist_spike_gun();
+    case ActorId::cultist_priest:
+        return new CultistPriest();
 
-    case Actor_id::cultist_priest:
-        return new Cultist_priest();
+    case ActorId::cultist_wizard:
+        return new CultistWizard();
 
-    case Actor_id::keziah_mason:
-        return new Keziah_mason();
+    case ActorId::cultist_arch_wizard:
+        return new CultistArchWizard();
 
-    case Actor_id::leng_elder:
-        return new Leng_elder();
+    case ActorId::keziah_mason:
+        return new KeziahMason();
 
-    case Actor_id::wolf:
+    case ActorId::leng_elder:
+        return new LengElder();
+
+    case ActorId::wolf:
         return new Wolf();
 
-    case Actor_id::flying_polyp:
-        return new Flying_polyp();
+    case ActorId::flying_polyp:
+        return new FlyingPolyp();
 
-    case Actor_id::greater_polyp:
-        return new Greater_polyp();
+    case ActorId::greater_polyp:
+        return new GreaterPolyp();
 
-    case Actor_id::mi_go:
-        return new Mi_go();
+    case ActorId::mind_leech:
+        return new MindLeech();
 
-    case Actor_id::mi_go_commander:
-        return new Mi_go_commander();
+    case ActorId::spirit_leech:
+        return new SpiritLeech();
 
-    case Actor_id::ghoul:
+    case ActorId::life_leech:
+        return new LifeLeech();
+
+    case ActorId::mi_go:
+        return new MiGo();
+
+    case ActorId::mi_go_commander:
+        return new MiGoCommander();
+
+    case ActorId::ghoul:
         return new Ghoul();
 
-    case Actor_id::shadow:
+    case ActorId::void_traveler:
+        return new VoidTraveler();
+
+    case ActorId::elder_void_traveler:
+        return new ElderVoidTraveler();
+
+    case ActorId::shadow:
         return new Shadow();
 
-    case Actor_id::invis_stalker:
-        return new Invis_stalker();
+    case ActorId::invis_stalker:
+        return new InvisStalker();
 
-    case Actor_id::byakhee:
+    case ActorId::byakhee:
         return new Byakhee();
 
-    case Actor_id::giant_mantis:
-        return new Giant_mantis();
+    case ActorId::giant_mantis:
+        return new GiantMantis();
 
-    case Actor_id::locust:
-        return new Giant_locust();
+    case ActorId::locust:
+        return new GiantLocust();
 
-    case Actor_id::mummy:
+    case ActorId::mummy:
         return new Mummy();
 
-    case Actor_id::croc_head_mummy:
-        return new Mummy_croc_head();
+    case ActorId::croc_head_mummy:
+        return new MummyCrocHead();
 
-    case Actor_id::khephren:
+    case ActorId::khephren:
         return new Khephren();
 
-    case Actor_id::nitokris:
-        return new Mummy_unique();
+    case ActorId::nitokris:
+        return new MummyUnique();
 
-    case Actor_id::deep_one:
-        return new Deep_one();
+    case ActorId::deep_one:
+        return new DeepOne();
 
-    case Actor_id::ape:
+    case ActorId::ape:
         return new Ape();
 
-    case Actor_id::worm_mass:
-        return new Worm_mass();
+    case ActorId::worm_mass:
+        return new WormMass();
 
-    case Actor_id::dust_vortex:
-        return new Dust_vortex();
+    case ActorId::mind_worms:
+        return new MindWorms();
 
-    case Actor_id::fire_vortex:
-        return new Fire_vortex();
+    case ActorId::dust_vortex:
+        return new DustVortex();
 
-    case Actor_id::ooze_black:
-        return new Ooze_black();
+    case ActorId::fire_vortex:
+        return new FireVortex();
 
-    case Actor_id::color_oo_space:
-        return new Color_oo_space();
+    case ActorId::energy_vortex:
+        return new EnergyVortex();
 
-    case Actor_id::ooze_clear:
-        return new Ooze_clear();
+    case ActorId::ooze_black:
+        return new OozeBlack();
 
-    case Actor_id::ooze_putrid:
-        return new Ooze_putrid();
+    case ActorId::strange_color:
+        return new StrangeColor();
 
-    case Actor_id::ooze_poison:
-        return new Ooze_poison();
+    case ActorId::ooze_clear:
+        return new OozeClear();
 
-    case Actor_id::chthonian:
+    case ActorId::ooze_putrid:
+        return new OozePutrid();
+
+    case ActorId::ooze_poison:
+        return new OozePoison();
+
+    case ActorId::chthonian:
         return new Chthonian();
 
-    case Actor_id::death_fiend:
-        return new Death_fiend();
+    case ActorId::death_fiend:
+        return new DeathFiend();
 
-    case Actor_id::hunting_horror:
-        return new Hunting_horror();
+    case ActorId::hunting_horror:
+        return new HuntingHorror();
 
-    case Actor_id::sentry_drone:
-        return new Sentry_drone();
+    case ActorId::sentry_drone:
+        return new SentryDrone();
 
-    case Actor_id::animated_wpn:
-        return new Animated_wpn();
+    case ActorId::animated_wpn:
+        return new AnimatedWpn();
 
-    case Actor_id::mold:
+    case ActorId::mold:
         return new Mold();
 
-    case Actor_id::gas_spore:
-        return new Gas_spore();
+    case ActorId::gas_spore:
+        return new GasSpore();
 
-    case Actor_id::the_high_priest:
-        return new The_high_priest();
+    case ActorId::the_high_priest:
+        return new TheHighPriest();
 
-    case Actor_id::END:
+    case ActorId::high_priest_guard_war_vet:
+        return new HighPriestGuardWarVet();
+
+    case ActorId::high_priest_guard_rogue:
+        return new HighPriestGuardRogue();
+
+    case ActorId::high_priest_guard_ghoul:
+        return new HighPriestGuardGhoul();
+
+    case ActorId::END:
         break;
     }
 
     return nullptr;
 }
 
-} //namespace
+} // namespace
 
-Actor* mk(const Actor_id id, const P& pos)
+Actor* mk(const ActorId id, const P& pos)
 {
-    assert(
-        !map::cells[pos.x][pos.y].rigid ||
-        map::cells[pos.x][pos.y].rigid->id() != Feature_id::stairs);
+    ASSERT(!map::cells[pos.x][pos.y].rigid ||
+           (map::cells[pos.x][pos.y].rigid->id() != FeatureId::stairs));
 
     Actor* const actor = mk_actor_from_id(id);
 
-    actor->place(pos, actor_data::data[size_t(id)]);
+    actor->place(pos, actor_data::data[(size_t)id]);
 
     auto& data = actor->data();
 
     if (data.nr_left_allowed_to_spawn > 0)
     {
-        data.nr_left_allowed_to_spawn--;
+        --data.nr_left_allowed_to_spawn;
     }
 
     game_time::add_actor(actor);
@@ -264,77 +305,76 @@ void delete_all_mon()
 
         if (actor == map::player)
         {
-          ++it;
+            ++it;
         }
-        else //Is monster
+        else // Is monster
         {
-          delete actor;
+            delete actor;
 
-          it = actors.erase(it);
+            it = actors.erase(it);
         }
     }
 }
 
-void summon(const P& origin,
-            const std::vector<Actor_id>& monster_ids,
-            const Make_mon_aware make_aware,
-            Actor* const actor_to_set_as_leader,
-            std::vector<Mon*>* monsters_ret,
-            Verbosity verbosity)
+std::vector<Mon*> spawn(const P& origin,
+                        const std::vector<ActorId>& monster_ids,
+                        const MakeMonAware make_aware,
+                        Actor* const actor_to_set_as_leader)
 {
-    if (monsters_ret)
+    TRACE_FUNC_BEGIN;
+
+    std::vector<Mon*> monsters_summoned;
+
+    bool blocked[map_w][map_h];
+
+    map_parsers::BlocksMoveCommon(ParseActors::yes)
+        .run(blocked);
+
+    auto free_cells = to_vec(blocked, false);
+
+    std::sort(begin(free_cells), end(free_cells), IsCloserToPos(origin));
+
+    const size_t nr_free_cells = free_cells.size();
+
+    const size_t nr_monster_ids = monster_ids.size();
+
+    const int nr_to_spawn = std::min(nr_free_cells, nr_monster_ids);
+
+    for (int i = 0; i < nr_to_spawn; ++i)
     {
-      monsters_ret->clear();
-    }
+        const P& pos = free_cells[i];
 
-    bool blocked[MAP_W][MAP_H];
-    map_parse::run(cell_check::Blocks_move_cmn(true), blocked);
+        const ActorId id = monster_ids[i];
 
-    std::vector<P> free_cells;
-    utils::mk_vector_from_bool_map(false, blocked, free_cells);
+        Actor* const actor = mk(id, pos);
 
-    std::sort(begin(free_cells), end(free_cells), Is_closer_to_pos(origin));
+        Mon* const mon = static_cast<Mon*>(actor);
 
-    const size_t    NR_FREE_CELLS   = free_cells.size();
-    const size_t    NR_MONSTER_IDS  = monster_ids.size();
-    const int       NR_TO_SPAWN     = std::min(NR_FREE_CELLS, NR_MONSTER_IDS);
+        ASSERT(map::is_pos_inside_map(pos, false));
 
-    std::vector<P> positions_to_animate;
-
-    for (int i = 0; i < NR_TO_SPAWN; ++i)
-    {
-        const P&        pos     = free_cells[i];
-        const Actor_id  id      = monster_ids[i];
-        Actor* const    actor   = mk(id, pos);
-        Mon* const      mon     = static_cast<Mon*>(actor);
-
-        assert(utils::is_pos_inside_map(pos, false));
-
-        if (monsters_ret)
+        // Should the player be aware of the monster?
+        if (map::cells[mon->pos.x][mon->pos.y].is_seen_by_player &&
+            !mon->is_sneaking())
         {
-            monsters_ret->push_back(mon);
+            mon->set_player_aware_of_me();
         }
+
+        monsters_summoned.push_back(mon);
 
         if (actor_to_set_as_leader)
         {
             mon->leader_ = actor_to_set_as_leader;
         }
 
-        if (make_aware == Make_mon_aware::yes)
+        if (make_aware == MakeMonAware::yes)
         {
-            mon->aware_counter_ = mon->data().nr_turns_aware;
-        }
-
-        if (verbosity == Verbosity::verbose && map::player->can_see_actor(*actor))
-        {
-            positions_to_animate.push_back(pos);
+            mon->aware_of_player_counter_ = mon->data().nr_turns_aware;
         }
     }
 
-    if (verbosity == Verbosity::verbose)
-    {
-      render::draw_blast_at_seen_cells(positions_to_animate, clr_magenta);
-    }
+    TRACE_FUNC_END;
+
+    return monsters_summoned;
 }
 
-} //actor_factory
+} // actor_factory

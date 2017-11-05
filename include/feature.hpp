@@ -1,10 +1,9 @@
-#ifndef FEATURE_H
-#define FEATURE_H
+#ifndef FEATURE_HPP
+#define FEATURE_HPP
 
 #include <vector>
 #include <string>
 
-#include "cmn_types.hpp"
 #include "feature_data.hpp"
 
 class Actor;
@@ -17,18 +16,23 @@ public:
 
     virtual ~Feature() {}
 
-    virtual Feature_id id() const = 0;
+    virtual FeatureId id() const = 0;
     virtual std::string name(const Article article) const = 0;
     virtual Clr clr() const = 0;
     virtual Clr clr_bg() const = 0;
 
-    const Feature_data_t& data() const;
+    const FeatureDataT& data() const;
 
-    virtual void hit(const Dmg_type dmg_type, const Dmg_method dmg_method, Actor* const actor);
+    virtual void hit(const int dmg,
+                     const DmgType dmg_type,
+                     const DmgMethod dmg_method,
+                     Actor* const actor);
+
+    virtual void reveal(const Verbosity verbosity);
 
     virtual void bump(Actor& actor_bumping);
     virtual void on_new_turn() {}
-    virtual bool can_move_cmn() const;
+    virtual bool can_move_common() const;
     virtual bool can_move(Actor& actor) const;
     virtual bool is_sound_passable() const;
     virtual bool is_los_passable() const;
@@ -36,7 +40,7 @@ public:
     virtual bool is_smoke_passable() const;
     virtual bool is_bottomless() const;
     virtual char glyph() const;
-    virtual Tile_id tile() const;
+    virtual TileId tile() const;
     virtual bool can_have_corpse() const;
     virtual bool can_have_rigid() const;
     virtual bool can_have_blood() const;
@@ -47,7 +51,7 @@ public:
 
     int shock_when_adj() const;
 
-    virtual void add_light(bool light[MAP_W][MAP_H]) const;
+    virtual void add_light(bool light[map_w][map_h]) const;
 
     P pos() const
     {
@@ -58,4 +62,4 @@ protected:
     P pos_;
 };
 
-#endif
+#endif // FEATURE_HPP

@@ -1,5 +1,5 @@
-#ifndef ITEM_SCROLL_H
-#define ITEM_SCROLL_H
+#ifndef ITEM_SCROLL_HPP
+#define ITEM_SCROLL_HPP
 
 #include "item.hpp"
 
@@ -9,7 +9,7 @@ class Spell;
 class Scroll: public Item
 {
 public:
-    Scroll(Item_data_t* const item_data) :
+    Scroll(ItemDataT* const item_data) :
         Item(item_data) {}
 
     ~Scroll() {}
@@ -19,7 +19,7 @@ public:
         return clr_magenta;
     }
 
-    Consume_item activate(Actor* const actor) override;
+    ConsumeItem activate(Actor* const actor) override;
 
     const std::string real_name() const;
 
@@ -30,8 +30,6 @@ public:
     Spell* mk_spell() const;
 
 protected:
-    void try_learn();
-
     std::string name_inf() const override;
 };
 
@@ -43,6 +41,6 @@ void init();
 void save();
 void load();
 
-} //Scroll_handling
+} //ScrollHandling
 
 #endif

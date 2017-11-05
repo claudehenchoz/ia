@@ -1,15 +1,14 @@
-#ifndef MON_H
-#define MON_H
+#ifndef MON_HPP
+#define MON_HPP
 
-#include "cmn_data.hpp"
-
+#include "global.hpp"
 #include "actor.hpp"
 #include "sound.hpp"
 #include "spells.hpp"
 
-struct Ai_att_data
+struct AiAttData
 {
-    Ai_att_data(Wpn* wpn, bool is_melee) :
+    AiAttData(Wpn* wpn, bool is_melee) :
         wpn         (wpn),
         is_melee    (is_melee) {}
 
@@ -17,27 +16,39 @@ struct Ai_att_data
     bool is_melee;
 };
 
-struct Ai_avail_attacks_data
+struct AiAvailAttacksData
 {
-    Ai_avail_attacks_data() :
+    AiAvailAttacksData() :
         is_reload_needed    (false),
         is_melee            (true) {}
 
-    Ai_avail_attacks_data(const Ai_avail_attacks_data& other) :
+    AiAvailAttacksData(const AiAvailAttacksData& other) :
         weapons             (other.weapons),
         is_reload_needed    (other.is_reload_needed),
         is_melee            (other.is_melee) {}
 
-    Ai_avail_attacks_data& operator=(const Ai_avail_attacks_data& other)
+    AiAvailAttacksData& operator=(const AiAvailAttacksData& other)
     {
-        weapons             = other.weapons;
-        is_reload_needed    = other.is_reload_needed;
-        is_melee            = other.is_melee;
+        weapons = other.weapons;
+        is_reload_needed = other.is_reload_needed;
+        is_melee = other.is_melee;
         return *this;
     }
 
     std::vector<Wpn*> weapons;
     bool is_reload_needed, is_melee;
+};
+
+struct MonSpell
+{
+    MonSpell() :
+        spell       (nullptr),
+        skill       ((SpellSkill)0),
+        cooldown    (-1) {}
+
+    Spell* spell;
+    SpellSkill skill;
+    int cooldown;
 };
 
 class Wpn;
@@ -48,80 +59,110 @@ public:
     Mon();
     virtual ~Mon();
 
-    bool can_see_actor(const Actor& other, const bool hard_blocked_los[MAP_W][MAP_H]) const;
+    bool can_see_actor(const Actor& other,
+                       const bool hard_blocked_los[map_w][map_h]) const;
+
+    std::vector<Actor*> seen_actors() const override;
+
+    std::vector<Actor*> seen_foes() const override;
+
+    // Actors which are possible to see (i.e. not impossible due to
+    // invisibility, etc), but may or may not currently be seen due to
+    // (lack of) awareness
+    std::vector<Actor*> seeable_foes() const;
+
+    bool is_sneaking() const;
 
     void act() override;
 
-    void move(Dir dir);
+    void move(Dir dir) override;
 
-    void avail_attacks(Actor& defender, Ai_avail_attacks_data& dst);
+    virtual Clr clr() const override;
 
-    Ai_att_data choose_att(const Ai_avail_attacks_data& mon_avail_attacks);
+    SpellSkill spell_skill(const SpellId id) const override;
+
+    void avail_attacks(Actor& defender, AiAvailAttacksData& dst);
+
+    AiAttData choose_att(const AiAvailAttacksData& mon_avail_attacks);
 
     bool try_attack(Actor& defender);
 
     void hear_sound(const Snd& snd);
 
-    void become_aware(const bool IS_FROM_SEEING);
+    void become_aware_player(const bool is_from_seeing,
+                             const int factor = 1);
 
-    void set_player_aware_of_me(const int DURATION_FACTOR = 1);
+    void become_wary_player();
+
+    void set_player_aware_of_me(int duration_factor = 1);
 
     void on_actor_turn() override;
 
     void on_std_turn() override final;
 
-    virtual std::string aggro_phrase_mon_seen() const
+    virtual std::string aggro_msg_mon_seen() const
     {
-        return data_->aggro_text_mon_seen;
+        return data_->aggro_msg_mon_seen;
     }
 
-    virtual std::string aggro_phrase_mon_hidden() const
+    virtual std::string aggro_msg_mon_hidden() const
     {
-        return data_->aggro_text_mon_hidden;
+        return data_->aggro_msg_mon_hidden;
     }
 
-    virtual Sfx_id aggro_sfx_mon_seen() const
+    virtual SfxId aggro_sfx_mon_seen() const
     {
         return data_->aggro_sfx_mon_seen;
     }
 
-    virtual Sfx_id aggro_sfx_mon_hidden() const
+    virtual SfxId aggro_sfx_mon_hidden() const
     {
         return data_->aggro_sfx_mon_hidden;
     }
 
-    void speak_phrase(const Alerts_mon alerts_others);
+    void speak_phrase(const AlertsMon alerts_others);
 
     bool is_leader_of(const Actor* const actor) const override;
     bool is_actor_my_leader(const Actor* const actor) const override;
 
-    int                 aware_counter_, player_aware_of_me_counter_;
-    bool                is_msg_mon_in_view_printed_;
-    Dir                 last_dir_moved_;
-    std::vector<Spell*> spells_known_;
-    int                 spell_cool_down_cur_;
-    bool                is_roaming_allowed_;
-    bool                is_sneaking_;
-    Actor*              leader_;
-    Actor*              tgt_;
-    bool                waiting_;
-    double              shock_caused_cur_;
-    bool                has_given_xp_for_spotting_;
+    int wary_of_player_counter_;
+    int aware_of_player_counter_;
+    int player_aware_of_me_counter_;
+    bool is_msg_mon_in_view_printed_;
+    bool is_player_feeling_msg_allowed_;
+    Dir last_dir_moved_;
+    MonRoamingAllowed is_roaming_allowed_;
+    Actor* leader_;
+    Actor* tgt_;
+    bool is_tgt_seen_;
+    bool waiting_;
+
+    std::vector<MonSpell> spells_;
 
 protected:
-    virtual void on_hit(int& dmg,
-                        const Dmg_type dmg_type,
-                        const Dmg_method method,
-                        const Allow_wound allow_wound) override;
+    // Return value 'true' means it is possible to see the other actor (i.e.
+    // it's not impossible due to invisibility, etc), but the actor may or may
+    // not currently be seen due to (lack of) awareness
+    bool is_actor_seeable(const Actor& other,
+                          const bool hard_blocked_los[map_w][map_h]) const;
 
-    virtual Did_action on_act()
+    virtual void on_hit(int& dmg,
+                        const DmgType dmg_type,
+                        const DmgMethod method,
+                        const AllowWound allow_wound) override;
+
+    virtual DidAction on_act()
     {
-        return Did_action::no;
+        return DidAction::no;
     }
 
     virtual void on_std_turn_hook() {}
 
-    int group_size();
+    void add_spell(SpellSkill skill, Spell* const spell);
+    void add_spell(SpellSkill skill, SpellId id);
+    void add_random_spell(SpellSkill skill);
+
+    int nr_mon_in_group();
 };
 
 class Rat: public Mon
@@ -132,19 +173,19 @@ public:
     virtual void mk_start_items() override;
 };
 
-class Rat_thing: public Rat
+class RatThing: public Rat
 {
 public:
-    Rat_thing() : Rat() {}
-    ~Rat_thing() {}
+    RatThing() : Rat() {}
+    ~RatThing() {}
     void mk_start_items() override;
 };
 
-class Brown_jenkin: public Rat_thing
+class BrownJenkin: public RatThing
 {
 public:
-    Brown_jenkin() : Rat_thing() {}
-    ~Brown_jenkin() {}
+    BrownJenkin() : RatThing() {}
+    ~BrownJenkin() {}
     void mk_start_items() override;
 };
 
@@ -155,70 +196,70 @@ public:
     virtual ~Spider() {}
 
 private:
-    Did_action on_act() override;
+    DidAction on_act() override;
 };
 
-class Green_spider: public Spider
+class GreenSpider: public Spider
 {
 public:
-    Green_spider() : Spider() {}
-    ~Green_spider() {}
+    GreenSpider() : Spider() {}
+    ~GreenSpider() {}
     void mk_start_items() override;
 };
 
-class White_spider: public Spider
+class WhiteSpider: public Spider
 {
 public:
-    White_spider() : Spider() {}
-    ~White_spider() {}
+    WhiteSpider() : Spider() {}
+    ~WhiteSpider() {}
     void mk_start_items() override;
 };
 
-class Red_spider: public Spider
+class RedSpider: public Spider
 {
 public:
-    Red_spider() : Spider() {}
-    ~Red_spider() {}
+    RedSpider() : Spider() {}
+    ~RedSpider() {}
     void mk_start_items() override;
 };
 
-class Shadow_spider: public Spider
+class ShadowSpider: public Spider
 {
 public:
-    Shadow_spider() : Spider() {}
-    ~Shadow_spider() {}
+    ShadowSpider() : Spider() {}
+    ~ShadowSpider() {}
     void mk_start_items() override;
 };
 
-class Leng_spider: public Spider
+class LengSpider: public Spider
 {
 public:
-    Leng_spider() : Spider() {}
-    ~Leng_spider() {}
+    LengSpider() : Spider() {}
+    ~LengSpider() {}
     void mk_start_items() override;
 };
 
-class Pit_viper: public Mon
+class PitViper: public Mon
 {
 public:
-    Pit_viper() : Mon() {}
-    virtual ~Pit_viper() {}
+    PitViper() : Mon() {}
+    virtual ~PitViper() {}
     void mk_start_items() override;
 };
 
-class Spitting_cobra: public Mon
+class SpittingCobra: public Mon
 {
 public:
-    Spitting_cobra() : Mon() {}
-    virtual ~Spitting_cobra() {}
+    SpittingCobra() : Mon() {}
+    virtual ~SpittingCobra() {}
     void mk_start_items() override;
 };
 
-class Black_mamba: public Mon
+class BlackMamba: public Mon
 {
 public:
-    Black_mamba() : Mon() {}
-    virtual ~Black_mamba() {}
+    BlackMamba() : Mon() {}
+    virtual ~BlackMamba() {}
     void mk_start_items() override;
 };
 
@@ -234,75 +275,77 @@ public:
     virtual ~Zombie() {}
 
 protected:
-    virtual Did_action on_act() override;
+    virtual DidAction on_act() override;
 
     void on_death() override;
 
-    Did_action try_resurrect();
+    void on_destroyed() override;
+
+    DidAction try_resurrect();
 
     int dead_turn_counter;
     bool has_resurrected;
 };
 
-class Zombie_claw: public Zombie
+class ZombieClaw: public Zombie
 {
 public:
-    Zombie_claw() : Zombie() {}
-    ~Zombie_claw() {}
+    ZombieClaw() : Zombie() {}
+    ~ZombieClaw() {}
     void mk_start_items() override;
 };
 
-class Zombie_axe: public Zombie
+class ZombieAxe: public Zombie
 {
 public:
-    Zombie_axe() : Zombie() {}
-    ~Zombie_axe() {}
+    ZombieAxe() : Zombie() {}
+    ~ZombieAxe() {}
     void mk_start_items() override;
 };
 
-class Bloated_zombie: public Zombie
+class BloatedZombie: public Zombie
 {
 public:
-    Bloated_zombie() : Zombie() {}
-    ~Bloated_zombie() {}
+    BloatedZombie() : Zombie() {}
+    ~BloatedZombie() {}
 
     void mk_start_items() override;
 };
 
-class Major_clapham_lee: public Zombie_claw
+class MajorClaphamLee: public ZombieClaw
 {
 public:
-    Major_clapham_lee() :
-        Zombie_claw(), has_summoned_tomb_legions(false) {}
-    ~Major_clapham_lee() {}
+    MajorClaphamLee() :
+        ZombieClaw(), has_summoned_tomb_legions(false) {}
+    ~MajorClaphamLee() {}
 
 private:
-    Did_action on_act() override;
+    DidAction on_act() override;
 
     bool has_summoned_tomb_legions;
 };
 
-class Dean_halsey: public Zombie_claw
+class DeanHalsey: public ZombieClaw
 {
 public:
-    Dean_halsey() : Zombie_claw() {}
-    ~Dean_halsey() {}
+    DeanHalsey() : ZombieClaw() {}
+    ~DeanHalsey() {}
 };
 
-class Crawling_intestines: public Mon
+class CrawlingIntestines: public Mon
 {
 public:
-    Crawling_intestines() : Mon() {}
-    ~Crawling_intestines() {}
+    CrawlingIntestines() : Mon() {}
+    ~CrawlingIntestines() {}
 
     void mk_start_items() override;
 };
 
-class Crawling_hand: public Mon
+class CrawlingHand: public Mon
 {
 public:
-    Crawling_hand() : Mon() {}
-    ~Crawling_hand() {}
+    CrawlingHand() : Mon() {}
+    ~CrawlingHand() {}
 
     void mk_start_items() override;
 };
@@ -316,40 +359,67 @@ public:
     void mk_start_items() override;
 };
 
-class Floating_head: public Mon
+class FloatingSkull: public Mon
 {
 public:
-    Floating_head() : Mon() {}
-    ~Floating_head() {}
+    FloatingSkull() : Mon() {}
+    ~FloatingSkull() {}
 
     void mk_start_items() override;
 
 private:
-    Did_action on_act() override;
+    DidAction on_act() override;
 };
 
-class Keziah_mason: public Mon
+class MindLeech: public Mon
 {
 public:
-    Keziah_mason() : Mon(), has_summoned_jenkin(false) {}
-    ~Keziah_mason() {}
+    MindLeech() : Mon() {}
+    ~MindLeech() {}
+
+    void mk_start_items() override;
+};
+
+class SpiritLeech: public Mon
+{
+public:
+    SpiritLeech() : Mon() {}
+    ~SpiritLeech() {}
+
+    void mk_start_items() override;
+};
+
+class LifeLeech: public Mon
+{
+public:
+    LifeLeech() : Mon() {}
+    ~LifeLeech() {}
+
+    void mk_start_items() override;
+};
+
+class KeziahMason: public Mon
+{
+public:
+    KeziahMason() : Mon(), has_summoned_jenkin(false) {}
+    ~KeziahMason() {}
 
     void mk_start_items() override;
 
 private:
-    Did_action on_act() override;
+    DidAction on_act() override;
 
     bool has_summoned_jenkin;
 };
 
-class Leng_elder: public Mon
+class LengElder: public Mon
 {
 public:
-    Leng_elder() :
+    LengElder() :
         Mon(),
         has_given_item_to_player_(false),
         nr_turns_to_hostile_(-1) {}
-    ~Leng_elder() {}
+    ~LengElder() {}
 
     void mk_start_items() override;
 
@@ -368,11 +438,12 @@ public:
 
     static std::string cultist_phrase();
 
-    std::string aggro_phrase_mon_seen() const
+    std::string aggro_msg_mon_seen() const override
     {
         return name_the() + ": " + cultist_phrase();
     }
-    std::string aggro_phrase_mon_hidden() const
+
+    std::string aggro_msg_mon_hidden() const override
     {
         return "Voice: " + cultist_phrase();
     }
@@ -380,81 +451,97 @@ public:
     virtual ~Cultist() {}
 };
 
-class Cultist_electric: public Cultist
+class BogTcher: public Cultist
 {
 public:
-    Cultist_electric() : Cultist() {}
-    ~Cultist_electric() {}
+    BogTcher() : Cultist() {}
+    ~BogTcher() {}
     void mk_start_items() override;
 };
 
-class Cultist_spike_gun: public Cultist
+class CultistPriest: public Cultist
 {
 public:
-    Cultist_spike_gun() : Cultist() {}
-    ~Cultist_spike_gun() {}
+    CultistPriest() : Cultist() {}
+    ~CultistPriest() {}
     void mk_start_items() override;
 };
 
-class Cultist_priest: public Cultist
+class CultistWizard: public Cultist
 {
 public:
-    Cultist_priest() : Cultist() {}
-    ~Cultist_priest() {}
+    CultistWizard() : Cultist() {}
+    ~CultistWizard() {}
     void mk_start_items() override;
 };
 
-class Lord_of_shadows: public Mon
+class CultistArchWizard: public Cultist
 {
 public:
-    Lord_of_shadows() : Mon() {}
-    ~Lord_of_shadows() {}
+    CultistArchWizard() : Cultist() {}
+    ~CultistArchWizard() {}
     void mk_start_items() override;
-
-private:
-    Did_action on_act() override;
 };
 
-class Lord_of_spiders: public Mon
+class LordOfShadows: public Mon
 {
 public:
-    Lord_of_spiders() : Mon() {}
-    ~Lord_of_spiders() {}
-
+    LordOfShadows() : Mon() {}
+    ~LordOfShadows() {}
     void mk_start_items() override;
 
 private:
-    Did_action on_act() override;
+    DidAction on_act() override;
 };
 
-class Lord_of_spirits: public Mon
+class LordOfSpiders: public Mon
 {
 public:
-    Lord_of_spirits() : Mon() {}
-    ~Lord_of_spirits() {}
+    LordOfSpiders() : Mon() {}
+    ~LordOfSpiders() {}
 
     void mk_start_items() override;
 
 private:
-    Did_action on_act() override;
+    DidAction on_act() override;
 };
 
-class Lord_of_pestilence: public Mon
+class LordOfSpirits: public Mon
 {
 public:
-    Lord_of_pestilence() : Mon() {}
-    ~Lord_of_pestilence() {}
+    LordOfSpirits() : Mon() {}
+    ~LordOfSpirits() {}
+
     void mk_start_items() override;
 
 private:
-    Did_action on_act() override;
+    DidAction on_act() override;
 };
 
-class Fire_hound: public Mon
+class LordOfPestilence: public Mon
 {
 public:
-    Fire_hound() : Mon() {}
-    ~Fire_hound() {}
+    LordOfPestilence() : Mon() {}
+    ~LordOfPestilence() {}
+    void mk_start_items() override;
+
+private:
+    DidAction on_act() override;
+};
+
+class FireHound: public Mon
+{
+public:
+    FireHound() : Mon() {}
+    ~FireHound() {}
+    void mk_start_items() override;
+};
+
+class EnergyHound: public Mon
+{
+public:
+    EnergyHound() : Mon() {}
+    ~EnergyHound() {}
     void mk_start_items() override;
 };
 
@@ -478,6 +565,7 @@ class Ghost: public Mon
 {
 public:
     Ghost() : Mon() {}
+
     ~Ghost() {}
 
     virtual void mk_start_items() override;
@@ -487,28 +575,35 @@ public:
         return "The Ghost is put to rest.";
     }
 
-private:
-    Did_action on_act() override;
+protected:
+    DidAction on_act() override;
 };
 
 class Phantasm: public Ghost
 {
 public:
     Phantasm() : Ghost() {}
+
     ~Phantasm() {}
+
     void mk_start_items() override;
 
     std::string death_msg() const override
     {
         return "The Phantasm is put to rest.";
     }
+
+private:
+    DidAction on_act() override;
 };
 
 class Wraith: public Ghost
 {
 public:
     Wraith() : Ghost() {}
+
     ~Wraith() {}
+
     void mk_start_items() override;
 
     std::string death_msg() const override
@@ -525,27 +620,43 @@ public:
     void mk_start_items() override;
 };
 
-class Giant_bat: public Mon
+class GiantBat: public Mon
 {
 public:
-    Giant_bat() : Mon() {}
-    ~Giant_bat() {}
+    GiantBat() : Mon() {}
+    ~GiantBat() {}
     void mk_start_items() override;
 };
 
-class Byakhee: public Giant_bat
+class VampireBat: public Mon
 {
 public:
-    Byakhee() : Giant_bat() {}
+    VampireBat() : Mon() {}
+    ~VampireBat() {}
+    void mk_start_items() override;
+};
+
+class Abaxu: public Mon
+{
+public:
+    Abaxu() : Mon() {}
+    ~Abaxu() {}
+    void mk_start_items() override;
+};
+
+class Byakhee: public GiantBat
+{
+public:
+    Byakhee() : GiantBat() {}
     ~Byakhee() {}
     void mk_start_items() override;
 };
 
-class Giant_mantis: public Mon
+class GiantMantis: public Mon
 {
 public:
-    Giant_mantis() : Mon() {}
-    ~Giant_mantis() {}
+    GiantMantis() : Mon() {}
+    ~GiantMantis() {}
     void mk_start_items() override;
 };
 
@@ -557,19 +668,19 @@ public:
     void mk_start_items() override;
 };
 
-class Death_fiend: public Mon
+class DeathFiend: public Mon
 {
 public:
-    Death_fiend() : Mon() {}
-    ~Death_fiend() {}
+    DeathFiend() : Mon() {}
+    ~DeathFiend() {}
     void mk_start_items() override;
 };
 
-class Hunting_horror: public Giant_bat
+class HuntingHorror: public GiantBat
 {
 public:
-    Hunting_horror() : Giant_bat() {}
-    ~Hunting_horror() {}
+    HuntingHorror() : GiantBat() {}
+    ~HuntingHorror() {}
     void mk_start_items() override;
 };
 
@@ -581,44 +692,44 @@ public:
     void mk_start_items() override;
 };
 
-class Mi_go: public Mon
+class MiGo: public Mon
 {
 public:
-    Mi_go() : Mon() {}
-    ~Mi_go() {}
+    MiGo() : Mon() {}
+    ~MiGo() {}
     void mk_start_items() override;
 };
 
-class Mi_go_commander: public Mi_go
+class MiGoCommander: public MiGo
 {
 public:
-    Mi_go_commander() : Mi_go() {}
-    ~Mi_go_commander() {}
+    MiGoCommander() : MiGo() {}
+    ~MiGoCommander() {}
 };
 
-class Sentry_drone: public Mon
+class SentryDrone: public Mon
 {
 public:
-    Sentry_drone() : Mon() {}
-    ~Sentry_drone() {}
-
-    void mk_start_items() override;
-};
-
-class Flying_polyp: public Mon
-{
-public:
-    Flying_polyp() : Mon() {}
-    ~Flying_polyp() {}
+    SentryDrone() : Mon() {}
+    ~SentryDrone() {}
 
     void mk_start_items() override;
 };
 
-class Greater_polyp: public Flying_polyp
+class FlyingPolyp: public Mon
 {
 public:
-    Greater_polyp() : Flying_polyp() {}
-    ~Greater_polyp() {}
+    FlyingPolyp() : Mon() {}
+    ~FlyingPolyp() {}
+
+    void mk_start_items() override;
+};
+
+class GreaterPolyp: public FlyingPolyp
+{
+public:
+    GreaterPolyp() : FlyingPolyp() {}
+    ~GreaterPolyp() {}
     void mk_start_items() override;
 };
 
@@ -630,17 +741,38 @@ public:
 
     void mk_start_items() override;
 
-    void place_hook() override;
+    virtual void place_hook() override;
 
 private:
-    Did_action on_act() override;
+    DidAction on_act() override;
 };
 
-class Deep_one: public Mon
+class VoidTraveler: public Mon
 {
 public:
-    Deep_one() : Mon() {}
-    ~Deep_one() {}
+    VoidTraveler() : Mon() {}
+    ~VoidTraveler() {}
+
+    void mk_start_items() override;
+
+private:
+    DidAction on_act() override;
+};
+
+class ElderVoidTraveler: public VoidTraveler
+{
+public:
+    ElderVoidTraveler() : VoidTraveler() {}
+    ~ElderVoidTraveler() {}
+
+    void mk_start_items() override;
+};
+
+class DeepOne: public Mon
+{
+public:
+    DeepOne() : Mon() {}
+    ~DeepOne() {}
 
     void mk_start_items() override;
 };
@@ -648,14 +780,14 @@ public:
 class Ape: public Mon
 {
 public:
-    Ape() : Mon(), frenzy_cool_down_(0) {}
+    Ape() : Mon(), frenzy_cooldown_(0) {}
     ~Ape() {}
     void mk_start_items() override;
 
 private:
-    Did_action on_act() override;
+    DidAction on_act() override;
 
-    int frenzy_cool_down_;
+    int frenzy_cooldown_;
 };
 
 class Mummy: public Mon
@@ -666,35 +798,35 @@ public:
     virtual void mk_start_items() override;
 
 private:
-    virtual Did_action on_act() override;
+    virtual DidAction on_act() override;
 };
 
-class Mummy_croc_head: public Mummy
+class MummyCrocHead: public Mummy
 {
 public:
-    Mummy_croc_head() : Mummy() {}
-    ~Mummy_croc_head() {}
+    MummyCrocHead() : Mummy() {}
+    ~MummyCrocHead() {}
     virtual void mk_start_items() override;
 };
 
-class Mummy_unique: public Mummy
+class MummyUnique: public Mummy
 {
 public:
-    Mummy_unique() : Mummy() {}
-    ~Mummy_unique() {}
+    MummyUnique() : Mummy() {}
+    ~MummyUnique() {}
     void mk_start_items() override;
 };
 
-class Khephren: public Mummy_unique
+class Khephren: public MummyUnique
 {
 public:
     Khephren() :
-        Mummy_unique(),
+        MummyUnique(),
         has_summoned_locusts(false) {}
     ~Khephren() {}
 
 private:
-    Did_action on_act() override;
+    DidAction on_act() override;
 
     bool has_summoned_locusts;
 };
@@ -713,73 +845,98 @@ public:
     }
 };
 
-class Invis_stalker: public Mon
+class InvisStalker: public Mon
 {
 public:
-    Invis_stalker() : Mon() {}
-    ~Invis_stalker() {}
+    InvisStalker() : Mon() {}
+    ~InvisStalker() {}
 
     virtual void mk_start_items() override;
 };
 
-class Worm_mass: public Mon
+class WormMass: public Mon
 {
 public:
-    Worm_mass() :
-        Mon() {}
+    WormMass() :
+        Mon             (),
+        allow_split_    (true) {}
 
-    ~Worm_mass() {}
+    ~WormMass() {}
 
     void mk_start_items() override;
 
 private:
+    bool allow_split_;
+
     void on_death() override;
 };
 
-class Giant_locust: public Mon
+class MindWorms: public WormMass
 {
 public:
-    Giant_locust() : Mon(), spawn_new_one_in_n(40) {}
-    ~Giant_locust() {}
+    MindWorms() :
+        WormMass() {}
+
+    ~MindWorms() {}
+
+    void mk_start_items() override;
+};
+
+class GiantLocust: public Mon
+{
+public:
+    GiantLocust() :
+        Mon(),
+        spawn_new_one_in_n(45) {}
+
+    ~GiantLocust() {}
 
     void mk_start_items() override;
 
 private:
-    Did_action on_act() override;
+    DidAction on_act() override;
     int spawn_new_one_in_n;
 };
 
 class Vortex: public Mon
 {
 public:
-    Vortex() : Mon(), pull_cooldown(0) {}
+    Vortex() :
+        Mon(),
+        pull_cooldown(0) {}
+
     virtual ~Vortex() {}
 
-    virtual void mk_start_items() = 0;
-    virtual void on_death() = 0;
+    virtual void mk_start_items() override = 0;
 
 private:
-    Did_action on_act() override;
+    DidAction on_act() override;
 
     int pull_cooldown;
 };
 
-class Dust_vortex: public Vortex
+class DustVortex: public Vortex
 {
 public:
-    Dust_vortex() : Vortex() {}
-    ~Dust_vortex() {}
+    DustVortex() : Vortex() {}
+    ~DustVortex() {}
     void mk_start_items() override;
-    void on_death();
 };
 
-class Fire_vortex: public Vortex
+class FireVortex: public Vortex
 {
 public:
-    Fire_vortex() : Vortex() {}
-    ~Fire_vortex() {}
+    FireVortex() : Vortex() {}
+    ~FireVortex() {}
     void mk_start_items() override;
-    void on_death();
+};
+
+class EnergyVortex: public Vortex
+{
+public:
+    EnergyVortex() : Vortex() {}
+    ~EnergyVortex() {}
+    void mk_start_items() override;
 };
 
 class Ooze: public Mon
@@ -787,7 +944,7 @@ class Ooze: public Mon
 public:
     Ooze() : Mon() {}
     ~Ooze() {}
-    virtual void mk_start_items() = 0;
+    virtual void mk_start_items() override = 0;
 
     std::string death_msg() const override
     {
@@ -798,48 +955,48 @@ private:
     virtual void on_std_turn_hook() override;
 };
 
-class Ooze_black: public Ooze
+class OozeBlack: public Ooze
 {
 public:
-    Ooze_black() : Ooze() {}
-    ~Ooze_black() {}
+    OozeBlack() : Ooze() {}
+    ~OozeBlack() {}
     void mk_start_items() override;
 };
 
-class Ooze_clear: public Ooze
+class OozeClear: public Ooze
 {
 public:
-    Ooze_clear() : Ooze() {}
-    ~Ooze_clear() {}
+    OozeClear() : Ooze() {}
+    ~OozeClear() {}
     void mk_start_items() override;
 };
 
-class Ooze_putrid: public Ooze
+class OozePutrid: public Ooze
 {
 public:
-    Ooze_putrid() : Ooze() {}
-    ~Ooze_putrid() {}
+    OozePutrid() : Ooze() {}
+    ~OozePutrid() {}
     void mk_start_items() override;
 };
 
-class Ooze_poison: public Ooze
+class OozePoison: public Ooze
 {
 public:
-    Ooze_poison() : Ooze() {}
-    ~Ooze_poison() {}
+    OozePoison() : Ooze() {}
+    ~OozePoison() {}
     void mk_start_items() override;
 };
 
-class Color_oo_space: public Ooze
+class StrangeColor: public Ooze
 {
 public:
-    Color_oo_space() : Ooze() {}
+    StrangeColor() : Ooze() {}
 
-    ~Color_oo_space() {}
+    ~StrangeColor() {}
 
     void mk_start_items() override;
 
-    Clr clr();
+    Clr clr() const override;
 
     std::string death_msg() const override
     {
@@ -847,14 +1004,14 @@ public:
     }
 
 private:
-    Did_action on_act() override;
+    DidAction on_act() override;
     void on_std_turn_hook() override;
 };
 
 class Mold: public Mon
 {
 public:
-    Mold() : Mon(), spawn_new_one_in_n(28) {}
+    Mold() : Mon(), spawn_new_one_in_n(40) {}
     ~Mold() {}
 
     void mk_start_items() override;
@@ -865,46 +1022,78 @@ public:
     }
 
 private:
-    Did_action on_act() override;
+    DidAction on_act() override;
 
     int spawn_new_one_in_n;
 };
 
-class Gas_spore: public Mon
+class GasSpore: public Mon
 {
 public:
-    Gas_spore() : Mon() {}
-    ~Gas_spore() {}
+    GasSpore() : Mon() {}
+    ~GasSpore() {}
 
-    void on_death();
+    void on_death() override;
 
     void mk_start_items() override {}
 };
 
-class The_high_priest: public Mon
+class TheHighPriest: public Mon
 {
 public:
-    The_high_priest();
-    ~The_high_priest() {}
+    TheHighPriest();
+    ~TheHighPriest() {}
 
     void mk_start_items() override;
 
 private:
-    Did_action on_act() override;
+    DidAction on_act() override;
 
     void on_death() override;
 
     void on_std_turn_hook() override;
 
-    bool has_greeted_player_;
+    bool has_become_aware_;
 };
 
-class Animated_wpn: public Mon
+class HighPriestGuardWarVet: public Mon
 {
 public:
-    Animated_wpn();
+    HighPriestGuardWarVet() {}
+    ~HighPriestGuardWarVet() {}
 
-    ~Animated_wpn() {}
+    void mk_start_items() override;
+};
+
+class HighPriestGuardRogue: public Mon
+{
+public:
+    HighPriestGuardRogue() {}
+    ~HighPriestGuardRogue() {}
+
+    void mk_start_items() override;
+};
+
+class HighPriestGuardGhoul: public Ghoul
+{
+public:
+    HighPriestGuardGhoul() {}
+    ~HighPriestGuardGhoul() {}
+
+    // Don't become allied to player Ghouls
+    void place_hook() override {}
+
+    void mk_start_items() override;
+};
+
+class AnimatedWpn: public Mon
+{
+public:
+    AnimatedWpn();
+
+    ~AnimatedWpn() {}
+
+    void on_death() override;
 
     std::string name_the() const override;
 
@@ -912,15 +1101,17 @@ public:
 
     char glyph() const override;
 
-    Clr clr() override;
+    Clr clr() const override;
 
-    Tile_id tile() const override;
+    TileId tile() const override;
 
     std::string descr() const override;
 
     std::string death_msg() const override;
 
     void on_std_turn_hook() override;
+
+    void drop();
 
 private:
     int nr_turns_until_drop_;

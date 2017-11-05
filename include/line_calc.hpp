@@ -1,10 +1,9 @@
-#ifndef LINE_CALC_H
-#define LINE_CALC_H
+#ifndef LINE_CALC_HPP
+#define LINE_CALC_HPP
 
 #include <vector>
 
-#include "cmn_data.hpp"
-#include "cmn_types.hpp"
+#include "rl_utils.hpp"
 
 namespace line_calc
 {
@@ -12,12 +11,14 @@ namespace line_calc
 void init();
 
 void calc_new_line(const P& origin, const P& tgt,
-                   const bool SHOULD_STOP_AT_TARGET, const int CHEB_TRAVEL_LIMIT,
-                   const bool ALLOW_OUTSIDE_MAP, std::vector<P>& line_ref);
+                   const bool should_stop_at_target,
+                   const int king_dist_limit,
+                   const bool allow_outside_map,
+                   std::vector<P>& line_ref);
 
 const std::vector<P>* fov_delta_line(const P& delta,
-                                     const double& MAX_DIST_ABS);
+                                     const double& max_dist_abs);
 
-} //line_calc
+} // line_calc
 
-#endif
+#endif // LINE_CALC_HPP

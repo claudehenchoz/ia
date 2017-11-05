@@ -1,9 +1,11 @@
-#ifndef INV_HANDLING
-#define INV_HANDLING
+#ifndef INV_HANDLING_HPP
+#define INV_HANDLING_HPP
 
 #include "inventory.hpp"
+#include "state.hpp"
+#include "browser.hpp"
 
-enum class Inv_scr
+enum class InvScr
 {
     inv,
     equip,
@@ -11,23 +13,162 @@ enum class Inv_scr
     none
 };
 
-namespace inv_handling
+class InvState: public State
 {
+public:
+    InvState();
 
-extern Inv_scr      scr_to_open_on_new_turn;
-extern Inv_slot*    equip_slot_to_open_on_new_turn;
-extern int          browser_idx_to_set_on_new_turn;
+    virtual ~InvState() {}
 
-void init();
+    StateId id() override;
 
-void run_inv_screen();
+protected:
+    void draw_slot(const SlotId id,
+                   const int y,
+                   const char key,
+                   const bool is_marked,
+                   const ItemRefAttInf att_info) const;
 
-void run_apply_screen();
+    void draw_backpack_item(const size_t backpack_idx,
+                            const int y,
+                            const char key,
+                            const bool is_marked,
+                            const ItemRefAttInf att_info) const;
 
-bool run_equip_screen(Inv_slot& slot_to_equip);
+    void activate(const size_t backpack_idx);
 
-void activate(const size_t GENERAL_ITEMS_ELEMENT);
+    MenuBrowser browser_;
 
-} //inv_handling
+    const int top_more_y_;
+    const int btm_more_y_;
+    const int inv_y0_;
+    const int inv_y1_;
+    const int inv_h_;
 
-#endif
+protected:
+    void draw_weight_pct_and_dots(const P item_pos,
+                                  const size_t item_name_len,
+                                  const Item& item,
+                                  const Clr& item_name_clr,
+                                  const bool is_marked) const;
+
+    void draw_item_symbol(const Item& item, const P& p) const;
+
+    void draw_detailed_item_descr(const Item* const item) const;
+};
+
+class BrowseInv: public InvState
+{
+public:
+    BrowseInv() :
+        InvState            (),
+        received_exit_cmd_  (false) {}
+
+    void on_start() override;
+
+    void on_resume() override;
+
+    void draw() override;
+
+    void update() override;
+
+    void exit_screen()
+    {
+        received_exit_cmd_ = true;
+    }
+
+    bool draw_overlayed() const override
+    {
+        // To draw messages over the map
+        return true;
+    }
+
+private:
+    bool received_exit_cmd_;
+};
+
+class Apply: public InvState
+{
+public:
+    Apply() :
+        InvState                    (),
+        filtered_backpack_indexes_  () {}
+
+    void on_start() override;
+
+    void draw() override;
+
+    void update() override;
+
+    bool draw_overlayed() const override
+    {
+        // To draw messages over the map
+        return true;
+    }
+
+private:
+    std::vector<size_t> filtered_backpack_indexes_;
+};
+
+class Equip: public InvState
+{
+public:
+    Equip(InvSlot& slot, BrowseInv& browse_inv_state) :
+        InvState                    (),
+        filtered_backpack_indexes_  (),
+        slot_to_equip_              (slot),
+        browse_inv_state_           (browse_inv_state) {}
+
+    void on_start() override;
+
+    void draw() override;
+
+    void update() override;
+
+private:
+    std::vector<size_t> filtered_backpack_indexes_;
+
+    InvSlot& slot_to_equip_;
+
+    BrowseInv& browse_inv_state_;
+};
+
+class SelectThrow: public InvState
+{
+public:
+    SelectThrow() :
+        InvState                    (),
+        slots_                      (),
+        filtered_backpack_indexes_  () {}
+
+    void on_start() override;
+
+    void draw() override;
+
+    void update() override;
+
+private:
+    std::vector<SlotId> slots_;
+    std::vector<size_t> filtered_backpack_indexes_;
+};
+
+class SelectIdentify: public InvState
+{
+public:
+    SelectIdentify() :
+        InvState            (),
+        slots_              (),
+        backpack_indexes_   () {}
+
+    void on_start() override;
+
+    void draw() override;
+
+    void update() override;
+
+private:
+    std::vector<SlotId> slots_;
+    std::vector<size_t> backpack_indexes_;
+};
+
+#endif // INV_HANDLING_HPP

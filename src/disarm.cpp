@@ -2,12 +2,11 @@
 
 #include "game_time.hpp"
 #include "msg_log.hpp"
-#include "render.hpp"
+#include "io.hpp"
 #include "actor_player.hpp"
 #include "query.hpp"
 #include "map.hpp"
 #include "feature_trap.hpp"
-#include "utils.hpp"
 #include "inventory.hpp"
 
 namespace disarm
@@ -21,7 +20,7 @@ void player_disarm()
     if (!map::player->prop_handler().allow_see())
     {
         msg_log::add("Not while blind.");
-        render::draw_map_and_interface();
+
         return;
     }
 
@@ -30,20 +29,15 @@ void player_disarm()
     const auto* const feature_at_player =
         map::cells[player_pos.x][player_pos.y].rigid;
 
-    if (feature_at_player->id() == Feature_id::trap)
+    if (feature_at_player->id() == FeatureId::trap)
     {
         const Trap* const trap = static_cast<const Trap*>(feature_at_player);
 
-        if (trap->trap_type() == Trap_id::web)
+        if (trap->is_holding_actor())
         {
-            const auto* const web = static_cast<const Trap_web*>(trap->trap_impl());
+            msg_log::add("Not while stuck.");
 
-            if (web->is_holding())
-            {
-                msg_log::add("Not while entangled in a spider web.");
-                render::draw_map_and_interface();
-                return;
-            }
+            return;
         }
     }
 
@@ -51,33 +45,35 @@ void player_disarm()
     if (map::player->enc_percent() >= 100)
     {
         msg_log::add("Not while encumbered.");
-        render::draw_map_and_interface();
+
         return;
     }
 
-    msg_log::add("Which direction?" + cancel_info_str, clr_white_high);
-    render::draw_map_and_interface();
+    msg_log::add("Which direction?" + cancel_info_str, clr_white_lgt);
 
-    const P pos(map::player->pos + dir_utils::offset(query::dir()));
 
-    if (pos == map::player->pos)
+    const Dir input_dir = query::dir(AllowCenter::no);
+
+    if (input_dir == Dir::END || input_dir == Dir::center)
     {
+        //Invalid direction
         msg_log::clear();
-        render::draw_map_and_interface();
     }
-    else //Not player position
+    else //Valid direction
     {
+        const P pos(map::player->pos + dir_utils::offset(input_dir));
+
         //Abort if cell is unseen
         if (!map::cells[pos.x][pos.y].is_seen_by_player)
         {
             msg_log::add("I cannot see there.");
-            render::draw_map_and_interface();
+
             return;
         }
 
         msg_log::clear();
 
-        Actor* actor_on_trap = utils::actor_at_pos(pos);
+        Actor* actor_on_trap = map::actor_at_pos(pos);
 
         //Abort if trap blocked by monster
         if (actor_on_trap)
@@ -95,10 +91,7 @@ void player_disarm()
         {
             map::cells[pos.x][pos.y].rigid->disarm();
         }
-
-        render::draw_map_and_interface();
     }
 }
 
-} //Disarm
-
+} //disarm

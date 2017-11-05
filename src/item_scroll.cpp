@@ -1,7 +1,6 @@
 #include "item_scroll.hpp"
 
 #include <string>
-#include <cassert>
 
 #include "init.hpp"
 #include "actor_player.hpp"
@@ -9,16 +8,17 @@
 #include "player_bon.hpp"
 #include "msg_log.hpp"
 #include "inventory.hpp"
-#include "player_spells_handling.hpp"
-#include "render.hpp"
-#include "utils.hpp"
+#include "player_spells.hpp"
+#include "io.hpp"
 #include "item_factory.hpp"
-#include "save_handling.hpp"
-#include "dungeon_master.hpp"
+#include "saving.hpp"
+#include "game.hpp"
 
 const std::string Scroll::real_name() const
 {
-    Spell* spell = spell_handling::mk_spell_from_id(data_->spell_cast_from_scroll);
+    Spell* spell =
+        spell_handling::mk_spell_from_id(
+            data_->spell_cast_from_scroll);
 
     const std::string scroll_name = spell->name();
 
@@ -32,114 +32,131 @@ std::vector<std::string> Scroll::descr() const
     if (data_->is_identified)
     {
         const auto* const spell = mk_spell();
-        const auto descr = spell->descr();
+
+        const auto player_spell_skill = map::player->spell_skill(spell->id());
+
+        const auto descr = spell->descr(player_spell_skill, IsIntrinsic::no);
+
         delete spell;
+
         return descr;
     }
-    else //Not identified
+    else // Not identified
     {
         return data_->base_descr;
     }
 }
 
-Consume_item Scroll::activate(Actor* const actor)
+ConsumeItem Scroll::activate(Actor* const actor)
 {
+    TRACE_FUNC_BEGIN;
+
     auto& prop_handler = actor->prop_handler();
 
-    if (
-        prop_handler.allow_cast_spell(Verbosity::verbose)   &&
-        prop_handler.allow_read(Verbosity::verbose)         &&
-        prop_handler.allow_speak(Verbosity::verbose))
+    // Check properties which NEVER allows reading or speaking
+    if (!prop_handler.allow_read_absolute(Verbosity::verbose) ||
+        !prop_handler.allow_speak(Verbosity::verbose))
     {
-        render::draw_map_and_interface();
-
-        if (!map::player->prop_handler().allow_see())
-        {
-            msg_log::add("I cannot read while blind.");
-            return Consume_item::no;
-        }
-
-        auto* const spell = mk_spell();
-
-        const std::string crumble_str = "The Manuscript crumbles to dust.";
-
-        if (data_->is_identified)
-        {
-            const std::string scroll_name = name(Item_ref_type::a, Item_ref_inf::none);
-
-            msg_log::add("I read " + scroll_name + "...");
-
-            spell->cast(map::player, false);
-
-            msg_log::add(crumble_str);
-
-            try_learn();
-        }
-        else //Not already identified
-        {
-            msg_log::add("I recite the forbidden incantations on the manuscript...");
-
-            data_->is_tried = true;
-
-            const auto is_noticed = spell->cast(map::player, false);
-
-            msg_log::add(crumble_str);
-
-            if (is_noticed == Spell_effect_noticed::yes)
-            {
-                identify(Verbosity::verbose);
-            }
-        }
-
-        delete spell;
-
-        return Consume_item::yes;
+        return ConsumeItem::no;
     }
 
-    return Consume_item::no;
+    const P& player_pos(map::player->pos);
+
+    const Cell& cell = map::cells[player_pos.x][player_pos.y];
+
+    if (cell.is_dark &&
+        !cell.is_lit)
+    {
+        msg_log::add("It's too dark to read here.");
+
+        TRACE_FUNC_END;
+
+        return ConsumeItem::no;
+    }
+
+    // OK, we can try to cast
+
+    const bool is_identified_before = data_->is_identified;
+
+    if (is_identified_before)
+    {
+        const std::string scroll_name =
+            name(ItemRefType::a, ItemRefInf::none);
+
+        msg_log::add("I read " + scroll_name + "...");
+    }
+    else // Not already identified
+    {
+        msg_log::add(
+            "I recite the forbidden incantations on the manuscript...");
+
+        data_->is_tried = true;
+    }
+
+    const std::string crumble_str = "The Manuscript crumbles to dust.";
+
+    // Check properties which MAY allow reading, with a random chance
+    if (!prop_handler.allow_read_chance(Verbosity::verbose))
+    {
+        msg_log::add(crumble_str);
+
+        TRACE_FUNC_END;
+
+        return ConsumeItem::yes;
+    }
+
+    // OK, we are fully allowed to read the scroll - cast the spell
+
+    auto* const spell = mk_spell();
+
+    const SpellId id = spell->id();
+
+    const auto player_spell_skill = map::player->spell_skill(id);
+
+    spell->cast(map::player,
+                player_spell_skill,
+                IsIntrinsic::no);
+
+    msg_log::add(crumble_str);
+
+    identify(Verbosity::verbose);
+
+    // Learn spell
+    if (spell->player_can_learn())
+    {
+        player_spells::learn_spell(id, Verbosity::verbose);
+    }
+
+    delete spell;
+
+    TRACE_FUNC_END;
+
+    return ConsumeItem::yes;
 }
 
 Spell* Scroll::mk_spell() const
 {
-    return spell_handling::mk_spell_from_id(data_->spell_cast_from_scroll);
+    return spell_handling::mk_spell_from_id(
+        data_->spell_cast_from_scroll);
 }
 
 void Scroll::identify(const Verbosity verbosity)
 {
-    if (!data_->is_identified)
+    if (data_->is_identified)
     {
-        data_->is_identified = true;
-
-        if (verbosity == Verbosity::verbose)
-        {
-            const std::string name_after = name(Item_ref_type::a, Item_ref_inf::none);
-
-            msg_log::add("I have identified " + name_after + ".");
-
-            render::draw_map_and_interface();
-
-            dungeon_master::add_history_event("Identified " + name_after + ".");
-        }
+        return;
     }
-}
 
-void Scroll::try_learn()
-{
-    if (player_bon::bg() == Bg::occultist)
+    data_->is_identified = true;
+
+    if (verbosity == Verbosity::verbose)
     {
-        Spell* const spell = mk_spell();
+        const std::string name_after =
+            name(ItemRefType::a, ItemRefInf::none);
 
-        if (
-            spell->is_avail_for_player() &&
-            !player_spells_handling::is_spell_learned(spell->id()))
-        {
-            msg_log::add("I learn to cast this incantation by heart!");
-            player_spells_handling::learn_spell_if_not_known(spell);
-        }
-        else
-        {
-            delete spell;
-        }
+        msg_log::add("I have identified " + name_after + ".");
+
+        game::add_history_event("Identified " + name_after + ".");
     }
 }
 
@@ -156,22 +173,22 @@ namespace
 
 std::vector<std::string> false_names_;
 
-} //namespace
+} // namespace
 
 void init()
 {
     TRACE_FUNC_BEGIN;
 
-    //Init possible fake names
+    // Init possible fake names
     false_names_.clear();
     false_names_.push_back("Cruensseasrjit");
     false_names_.push_back("Rudsceleratus");
     false_names_.push_back("Rudminuox");
-    false_names_.push_back("Cruo-stragara_na");
-    false_names_.push_back("Praya_navita");
-    false_names_.push_back("Pretiacruento");
-    false_names_.push_back("Pestis cruento");
-    false_names_.push_back("Cruento pestis");
+    false_names_.push_back("Cruo stragara-na");
+    false_names_.push_back("Praya navita");
+    false_names_.push_back("Pretia Cruento");
+    false_names_.push_back("Pestis Cruento");
+    false_names_.push_back("Cruento Pestis");
     false_names_.push_back("Domus-bhaava");
     false_names_.push_back("Acerbus-shatruex");
     false_names_.push_back("Pretaanluxis");
@@ -215,11 +232,11 @@ void init()
     cmb.push_back("Barada");
     cmb.push_back("Nikto");
 
-    const size_t NR_CMB_PARTS = cmb.size();
+    const size_t nr_cmb_parts = cmb.size();
 
-    for (size_t i = 0; i < NR_CMB_PARTS; ++i)
+    for (size_t i = 0; i < nr_cmb_parts; ++i)
     {
-        for (size_t ii = 0; ii < NR_CMB_PARTS; ii++)
+        for (size_t ii = 0; ii < nr_cmb_parts; ii++)
         {
             if (i != ii)
             {
@@ -230,38 +247,46 @@ void init()
 
     for (auto& d : item_data::data)
     {
-        if (d.type == Item_type::scroll)
+        if (d.type == ItemType::scroll)
         {
-            //False name
-            const size_t IDX = rnd::range(0, false_names_.size() - 1);
+            // False name
+            const size_t idx = rnd::range(0, false_names_.size() - 1);
 
-            const std::string& TITLE = false_names_[IDX];
+            const std::string& title = false_names_[idx];
 
-            d.base_name_un_id.names[int(Item_ref_type::plain)] =
-                "Manuscript titled "    + TITLE;
+            d.base_name_un_id.names[(size_t)ItemRefType::plain] =
+                "Manuscript titled " + title;
 
-            d.base_name_un_id.names[int(Item_ref_type::plural)] =
-                "Manuscripts titled "   + TITLE;
+            d.base_name_un_id.names[(size_t)ItemRefType::plural] =
+                "Manuscripts titled " + title;
 
-            d.base_name_un_id.names[int(Item_ref_type::a)] =
-                "a Manuscript titled "  + TITLE;
+            d.base_name_un_id.names[(size_t)ItemRefType::a] =
+                "a Manuscript titled " + title;
 
-            false_names_.erase(false_names_.begin() + IDX);
+            false_names_.erase(false_names_.begin() + idx);
 
-            //True name
-            const Scroll* const scroll = static_cast<const Scroll*>(item_factory::mk(d.id, 1));
+            // True name
+            const Scroll* const scroll =
+                static_cast<const Scroll*>(item_factory::mk(d.id, 1));
 
-            const std::string REAL_TYPE_NAME = scroll->real_name();
+            const std::string real_type_name = scroll->real_name();
 
             delete scroll;
 
-            const std::string REAL_NAME        = "Manuscript of "    + REAL_TYPE_NAME;
-            const std::string REAL_NAME_PLURAL = "Manuscripts of "   + REAL_TYPE_NAME;
-            const std::string REAL_NAME_A      = "a Manuscript of "  + REAL_TYPE_NAME;
+            const std::string real_name =
+                "Manuscript of " + real_type_name;
 
-            d.base_name.names[int(Item_ref_type::plain)]  = REAL_NAME;
-            d.base_name.names[int(Item_ref_type::plural)] = REAL_NAME_PLURAL;
-            d.base_name.names[int(Item_ref_type::a)]      = REAL_NAME_A;
+            const std::string real_name_plural =
+                "Manuscripts of " + real_type_name;
+
+            const std::string real_name_a =
+                "a Manuscript of " + real_type_name;
+
+            d.base_name.names[(size_t)ItemRefType::plain] = real_name;
+
+            d.base_name.names[(size_t)ItemRefType::plural] = real_name_plural;
+
+            d.base_name.names[(size_t)ItemRefType::a] = real_name_a;
         }
     }
 
@@ -270,32 +295,37 @@ void init()
 
 void save()
 {
-    for (int i = 0; i < int(Item_id::END); ++i)
+    for (size_t i = 0; i < (size_t)ItemId::END; ++i)
     {
-        if (item_data::data[i].type == Item_type::scroll)
+        if (item_data::data[i].type == ItemType::scroll)
         {
             auto& base_name_un_id = item_data::data[i].base_name_un_id;
 
-            save_handling::put_str(base_name_un_id.names[int(Item_ref_type::plain)]);
-            save_handling::put_str(base_name_un_id.names[int(Item_ref_type::plural)]);
-            save_handling::put_str(base_name_un_id.names[int(Item_ref_type::a)]);
+            saving::put_str(base_name_un_id.names[(size_t)ItemRefType::plain]);
+            saving::put_str(base_name_un_id.names[(size_t)ItemRefType::plural]);
+            saving::put_str(base_name_un_id.names[(size_t)ItemRefType::a]);
         }
     }
 }
 
 void load()
 {
-    for (int i = 0; i < int(Item_id::END); ++i)
+    for (size_t i = 0; i < (size_t)ItemId::END; ++i)
     {
-        if (item_data::data[i].type == Item_type::scroll)
+        if (item_data::data[i].type == ItemType::scroll)
         {
             auto& base_name_un_id = item_data::data[i].base_name_un_id;
 
-            base_name_un_id.names[int(Item_ref_type::plain)]  = save_handling::get_str();
-            base_name_un_id.names[int(Item_ref_type::plural)] = save_handling::get_str();
-            base_name_un_id.names[int(Item_ref_type::a)]      = save_handling::get_str();
+            base_name_un_id.names[(size_t)ItemRefType::plain] =
+                saving::get_str();
+
+            base_name_un_id.names[(size_t)ItemRefType::plural] =
+                saving::get_str();
+
+            base_name_un_id.names[(size_t)ItemRefType::a] =
+                saving::get_str();
         }
     }
 }
 
-} //Scroll_handling
+} // scroll_handling

@@ -1,402 +1,664 @@
 #include "create_character.hpp"
 
-#include "render.hpp"
+#include "io.hpp"
 #include "actor_player.hpp"
-#include "input.hpp"
-#include "menu_input.hpp"
+#include "browser.hpp"
 #include "text_format.hpp"
-#include "utils.hpp"
 #include "map.hpp"
-#include "dungeon_master.hpp"
-
-namespace create_character
-{
-
-const int OPT_X0    = 0;
-const int OPT_Y0    = 2;
-const int OPT_X1    = 22;
-const int OPT_Y1    = SCREEN_H - 2;
-const int OPT_H     = OPT_Y1 - OPT_Y0 + 1;
+#include "game.hpp"
+#include "msg_log.hpp"
+#include "init.hpp"
+#include "popup.hpp"
+#include "map_travel.hpp"
 
 namespace
 {
 
-const int DESCR_X0  = OPT_X1 + 2;
-const int DESCR_Y0  = OPT_Y0;
-const int DESCR_X1  = SCREEN_W - 1;
-const int DESCR_Y1  = OPT_Y1;
+const int top_more_y_ = 1;
+const int btm_more_y_ = screen_h - 1;
+const int opt_x0_ = 0;
+const int opt_y0_ = top_more_y_ + 1;
+const int opt_x1_ = 23;
+const int opt_y1_ = btm_more_y_ - 1;
+const int opt_h_ = opt_y1_ - opt_y0_ + 1;
 
-const int DESCR_W   = DESCR_X1 - DESCR_Y1 + 1;
+const int descr_x0_ = opt_x1_ + 2;
+const int descr_y0_ = opt_y0_;
+const int descr_x1_ = screen_w - 1;
+const int descr_y1_ = opt_y1_;
 
-namespace enter_name
+const int descr_w_ = descr_x1_ - descr_y1_ + 1;
+
+} // namespace
+
+// -----------------------------------------------------------------------------
+// New game state
+// -----------------------------------------------------------------------------
+NewGameState::NewGameState()
 {
 
-void draw(const std::string& cur_string)
-{
-    render::clear_screen();
-
-    render::draw_text_center("What is your name?",
-                               Panel::screen,
-                               P(MAP_W_HALF, 0),
-                               clr_title);
-    const int Y_NAME = 3;
-
-    const std::string name_str = cur_string.size() < PLAYER_NAME_MAX_LEN ?
-                                 cur_string + "_" : cur_string;
-
-    const size_t NAME_X0 = MAP_W_HALF - (PLAYER_NAME_MAX_LEN / 2);
-    const size_t NAME_X1 = NAME_X0 + PLAYER_NAME_MAX_LEN - 1;
-
-    render::draw_text(name_str,
-                      Panel::screen,
-                      P(NAME_X0, Y_NAME),
-                      clr_menu_highlight);
-
-    Rect box_rect(P(NAME_X0 - 1, Y_NAME - 1),
-                  P(NAME_X1 + 1, Y_NAME + 1));
-
-    render::draw_box(box_rect);
-
-    render::update_screen();
 }
 
-void read_keys(std::string& cur_string, bool& is_done)
+NewGameState::~NewGameState()
 {
-    const Key_data& d = input::input(false);
 
-    if (d.sdl_key == SDLK_RETURN)
+}
+
+StateId NewGameState::id()
+{
+    return StateId::new_game;
+}
+
+void NewGameState::on_pushed()
+{
+    std::unique_ptr<State> game_state(
+        new GameState(GameEntryMode::new_game));
+
+    std::unique_ptr<State> name_state(new EnterNameState);
+
+    std::unique_ptr<State> trait_state(new PickTraitState);
+
+    std::unique_ptr<State> bg_state(new PickBgState);
+
+    states::push(std::move(game_state));
+    states::push(std::move(name_state));
+    states::push(std::move(trait_state));
+    states::push(std::move(bg_state));
+}
+
+void NewGameState::on_resume()
+{
+    states::pop();
+}
+
+// -----------------------------------------------------------------------------
+// Pick background state
+// -----------------------------------------------------------------------------
+PickBgState::PickBgState() :
+    State(),
+    browser_()
+{
+
+}
+
+PickBgState::~PickBgState()
+{
+
+}
+
+StateId PickBgState::id()
+{
+    return StateId::pick_background;
+}
+
+void PickBgState::on_start()
+{
+    bgs_ = player_bon::pickable_bgs();
+
+    browser_.reset(bgs_.size(), opt_h_);
+
+    // Let the browser start at Rogue, to recommend it as the default choice
+    browser_.set_y((int)Bg::rogue);
+}
+
+void PickBgState::update()
+{
+    if (config::is_bot_playing())
     {
-        is_done = true;
-        cur_string = cur_string.empty() ? "Player" : cur_string;
+        player_bon::pick_bg(rnd::element(bgs_));
+
+        states::pop();
+
         return;
     }
 
-    if (cur_string.size() < PLAYER_NAME_MAX_LEN)
-    {
-        if (
-            d.sdl_key == SDLK_SPACE ||
-            (d.key >= int('a') && d.key <= int('z')) ||
-            (d.key >= int('A') && d.key <= int('Z')) ||
-            (d.key >= int('0') && d.key <= int('9')))
-        {
-            if (d.sdl_key == SDLK_SPACE)
-            {
-                cur_string.push_back(' ');
-            }
-            else
-            {
-                cur_string.push_back(char(d.key));
-            }
+    const auto input = io::get(false);
 
-            draw(cur_string);
+    const MenuAction action =
+        browser_.read(input,
+                      MenuInputMode::scrolling_and_letters);
+
+    switch (action)
+    {
+    case MenuAction::selected:
+    case MenuAction::selected_shift:
+    {
+        const Bg bg = bgs_[browser_.y()];
+
+        player_bon::pick_bg(bg);
+
+        states::pop();
+    }
+    break;
+
+    case MenuAction::esc:
+    {
+      states::pop_until(StateId::menu);
+    }
+    break;
+
+    default:
+        break;
+    }
+}
+
+void PickBgState::draw()
+{
+    io::draw_text_center("What is your background?",
+                         Panel::screen,
+                         P(map_w_half, 0),
+                         clr_title,
+                         clr_black,
+                         true);
+
+    int y = opt_y0_;
+
+    const Bg bg_marked = bgs_[browser_.y()];
+
+    //
+    // Backgrounds
+    //
+    std::string key_str = "a) ";
+
+    for (const Bg bg : bgs_)
+    {
+        const std::string bg_name = player_bon::bg_title(bg);
+        const bool is_marked = bg == bg_marked;
+
+        const Clr& drw_clr =
+            is_marked ?
+            clr_menu_highlight :
+            clr_menu_drk;
+
+        io::draw_text(key_str + bg_name,
+                      Panel::screen,
+                      P(opt_x0_, y),
+                      drw_clr);
+
+        ++y;
+        ++key_str[0];
+    }
+
+    //
+    // Description
+    //
+    y = descr_y0_;
+
+    const auto descr = player_bon::bg_descr(bg_marked);
+
+    ASSERT(!descr.empty());
+
+    for (const auto& descr_entry : descr)
+    {
+        if (descr_entry.str.empty())
+        {
+            ++y;
+
+            continue;
+        }
+
+        const auto formatted_lines =
+            text_format::split(descr_entry.str, descr_w_);
+
+        for (const std::string& line : formatted_lines)
+        {
+            io::draw_text(line,
+                          Panel::screen,
+                          P(descr_x0_, y),
+                          descr_entry.clr);
+            ++y;
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Pick trait state
+// -----------------------------------------------------------------------------
+PickTraitState::PickTraitState() :
+    State(),
+    browser_traits_avail_(),
+    browser_traits_unavail_(),
+    traits_avail_(),
+    traits_unavail_(),
+    screen_mode_(TraitScreenMode::pick_new)
+{
+
+}
+
+PickTraitState::~PickTraitState()
+{
+
+}
+
+StateId PickTraitState::id()
+{
+    return StateId::pick_trait;
+}
+
+void PickTraitState::on_start()
+{
+    const Bg player_bg = player_bon::bg();
+
+    player_bon::unpicked_traits_for_bg(player_bg,
+                                       traits_avail_,
+                                       traits_unavail_);
+
+    browser_traits_avail_.reset(traits_avail_.size(), opt_h_);
+
+    browser_traits_unavail_.reset(traits_unavail_.size(), opt_h_);
+}
+
+void PickTraitState::update()
+{
+    if (config::is_bot_playing())
+    {
+        states::pop();
+
+        return;
+    }
+
+    const auto input = io::get(false);
+
+    //
+    // Switch trait screen mode?
+    //
+    if (input.key == SDLK_TAB)
+    {
+        screen_mode_ =
+            screen_mode_ == TraitScreenMode::pick_new ?
+            TraitScreenMode::view_unavail :
+            TraitScreenMode::pick_new;
+
+        return;
+    }
+
+    MenuBrowser& browser =
+        (screen_mode_ == TraitScreenMode::pick_new) ?
+        browser_traits_avail_ :
+        browser_traits_unavail_;
+
+    const MenuAction action =
+        browser.read(input,
+                     MenuInputMode::scrolling_and_letters);
+
+    switch (action)
+    {
+    case MenuAction::esc:
+    {
+      if (states::contains_state(StateId::pick_name))
+          states::pop_until(StateId::menu);
+    }
+    break;
+
+    case MenuAction::selected:
+    case MenuAction::selected_shift:
+    {
+        if (screen_mode_ == TraitScreenMode::pick_new)
+        {
+            const Trait trait = traits_avail_[browser.y()];
+
+            player_bon::pick_trait(trait);
+
+            states::pop();
+        }
+    }
+    break;
+
+    default:
+        break;
+    }
+}
+
+void PickTraitState::draw()
+{
+    const int clvl = game::clvl();
+
+    std::string title;
+
+    if (screen_mode_ == TraitScreenMode::pick_new)
+    {
+        title =
+            (clvl == 1) ?
+            "Which extra trait do you start with?" :
+            "Which trait do you gain?";
+
+        title += " [TAB] to view unavailable traits";
+    }
+    else // Viewing unavailable traits
+    {
+        title = "Currently unavailable traits";
+
+        title += " [TAB] to view available traits";
+    }
+
+    io::draw_text_center(title,
+                         Panel::screen,
+                         P(map_w_half, 0),
+                         clr_title,
+                         clr_black,
+                         true);
+
+    MenuBrowser* browser;
+
+    std::vector<Trait>* traits;
+
+    if (screen_mode_ == TraitScreenMode::pick_new)
+    {
+        browser = &browser_traits_avail_;
+
+        traits = &traits_avail_;
+    }
+    else // Viewing unavailable traits
+    {
+        browser = &browser_traits_unavail_;
+
+        traits = &traits_unavail_;
+    }
+
+    const int browser_y = browser->y();
+
+    const Trait trait_marked = traits->at(browser_y);
+
+    const Bg player_bg = player_bon::bg();
+
+    //
+    // Traits
+    //
+    int y = opt_y0_;
+
+    const Range idx_range_shown = browser->range_shown();
+
+    std::string key_str = "a) ";
+
+    for (int i = idx_range_shown.min; i <= idx_range_shown.max; ++i)
+    {
+        const Trait trait = traits->at(i);
+
+        std::string trait_name = player_bon::trait_title(trait);
+
+        const bool is_idx_marked = browser_y == i;
+
+        Clr clr = clr_magenta_lgt;
+
+        if (screen_mode_ == TraitScreenMode::pick_new)
+        {
+            if (is_idx_marked)
+            {
+                clr = clr_menu_highlight;
+            }
+            else // Not marked
+            {
+                clr = clr_menu_drk;
+            }
+        }
+        else // Viewing unavailable traits
+        {
+            if (is_idx_marked)
+            {
+                clr = clr_red_lgt;
+            }
+            else // Not marked
+            {
+                clr = clr_red;
+            }
+        }
+
+        io::draw_text(key_str + trait_name,
+                      Panel::screen,
+                      P(opt_x0_, y),
+                      clr);
+
+        ++y;
+        ++key_str[0];
+    }
+
+    // Draw "more" labels
+    if (!browser->is_on_top_page())
+    {
+        io::draw_text("(More - Page Up)",
+                      Panel::screen,
+                      P(opt_x0_, top_more_y_),
+                      clr_white_lgt);
+    }
+
+    if (!browser->is_on_btm_page())
+    {
+        io::draw_text("(More - Page Down)",
+                      Panel::screen,
+                      P(opt_x0_, btm_more_y_),
+                      clr_white_lgt);
+    }
+
+    //
+    // Description
+    //
+    y = descr_y0_;
+
+    std::string descr = player_bon::trait_descr(trait_marked);
+
+    const auto formatted_descr = text_format::split(descr, descr_w_);
+
+    for (const std::string& str : formatted_descr)
+    {
+        io::draw_text(str,
+                      Panel::screen,
+                      P(descr_x0_, y),
+                      clr_white);
+        ++y;
+    }
+
+    //
+    // Prerequisites
+    //
+    std::vector<Trait> trait_marked_prereqs;
+
+    Bg trait_marked_bg_prereq = Bg::END;
+
+    int trait_marked_clvl_prereq = -1;
+
+    player_bon::trait_prereqs(trait_marked,
+                              player_bg,
+                              trait_marked_prereqs,
+                              trait_marked_bg_prereq,
+                              trait_marked_clvl_prereq);
+
+    const int y0_prereqs = 10;
+
+    y = y0_prereqs;
+
+    if (!trait_marked_prereqs.empty() ||
+        trait_marked_bg_prereq != Bg::END)
+    {
+        const std::string label = "Prerequisite(s):";
+
+        io::draw_text(label,
+                      Panel::screen,
+                      P(descr_x0_, y),
+                      clr_white);
+
+        std::vector<StrAndClr> prereq_titles;
+
+        std::string prereq_str = "";
+
+        const Clr& clr_prereq_ok = clr_green;
+
+        const Clr& clr_prereq_not_ok = clr_red;
+
+        if (trait_marked_bg_prereq != Bg::END)
+        {
+            const Clr& clr =
+                (player_bon::bg() == trait_marked_bg_prereq) ?
+                clr_prereq_ok :
+                clr_prereq_not_ok;
+
+            const std::string bg_title =
+                player_bon::bg_title(trait_marked_bg_prereq);
+
+            prereq_titles.push_back(StrAndClr(bg_title, clr));
+        }
+
+        for (Trait prereq_trait : trait_marked_prereqs)
+        {
+            const bool is_picked =
+                player_bon::traits[(size_t)prereq_trait];
+
+            const Clr& clr =
+                is_picked ?
+                clr_prereq_ok :
+                clr_prereq_not_ok;
+
+            const std::string trait_title =
+                player_bon::trait_title(prereq_trait);
+
+            prereq_titles.push_back(StrAndClr(trait_title, clr));
+        }
+
+        if (trait_marked_clvl_prereq != -1)
+        {
+            const Clr& clr =
+                (game::clvl() >= trait_marked_clvl_prereq) ?
+                clr_prereq_ok :
+                clr_prereq_not_ok;
+
+            const std::string clvl_title =
+                "Character level " + std::to_string(trait_marked_clvl_prereq);
+
+            prereq_titles.push_back(StrAndClr(clvl_title, clr));
+        }
+
+        const int prereq_list_x = descr_x0_ + label.size() + 1;
+
+        for (const StrAndClr& title : prereq_titles)
+        {
+            io::draw_text(title.str,
+                          Panel::screen,
+                          P(prereq_list_x, y),
+                          title.clr);
+
+            ++y;
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Enter name state
+// -----------------------------------------------------------------------------
+EnterNameState::EnterNameState() :
+    State(),
+    current_str_()
+{
+
+}
+
+EnterNameState::~EnterNameState()
+{
+
+}
+
+StateId EnterNameState::id()
+{
+    return StateId::pick_name;
+}
+
+void EnterNameState::on_start()
+{
+    const std::string default_name = config::default_player_name();
+
+    current_str_ = default_name;
+}
+
+void EnterNameState::update()
+{
+    if (config::is_bot_playing())
+    {
+        ActorDataT& d = map::player->data();
+
+        d.name_a = d.name_the = "Bot";
+
+        states::pop();
+
+        return;
+    }
+
+    const auto input = io::get(false);
+
+    if (input.key == SDLK_ESCAPE)
+    {
+      states::pop_until(StateId::menu);
+      return;
+    }
+
+    if (input.key == SDLK_RETURN)
+    {
+        if (current_str_.empty())
+        {
+            current_str_ = "Player";
+        }
+        else // Player has entered a string
+        {
+            config::set_default_player_name(current_str_);
+        }
+
+        ActorDataT& d = map::player->data();
+
+        d.name_a = d.name_the = current_str_;
+
+        states::pop();
+
+        return;
+    }
+
+    if (current_str_.size() < player_name_max_len)
+    {
+        if (input.key == SDLK_SPACE)
+        {
+            current_str_.push_back(' ');
+
+            return;
+        }
+        else if ((input.key >= 'a' && input.key <= 'z') ||
+                 (input.key >= 'A' && input.key <= 'Z') ||
+                 (input.key >= '0' && input.key <= '9'))
+        {
+            current_str_.push_back(input.key);
+
             return;
         }
     }
 
-    if (cur_string.size() > 0)
+    if (!current_str_.empty())
     {
-        if (d.sdl_key == SDLK_BACKSPACE)
+        if (input.key == SDLK_BACKSPACE)
         {
-            cur_string.erase(cur_string.end() - 1);
-            draw(cur_string);
+            current_str_.erase(current_str_.end() - 1);
         }
     }
 }
 
-void run()
+void EnterNameState::draw()
 {
-    std::string name = "";
-    draw(name);
-    bool is_done = false;
+    io::draw_text_center("What is your name?",
+                         Panel::screen,
+                         P(map_w_half, 0),
+                         clr_title);
 
-    while (!is_done)
-    {
-        if (config::is_bot_playing())
-        {
-            name = "Bot";
-            is_done = true;
-        }
-        else
-        {
-            read_keys(name, is_done);
-        }
-    }
+    const int y_name = 3;
 
-    Actor_data_t& def = map::player->data();
-    def.name_a      = def.name_the = name;
+    const std::string name_str =
+        (current_str_.size() < player_name_max_len) ?
+        current_str_ + "_" :
+        current_str_;
+
+    const size_t name_x0 = map_w_half - (player_name_max_len / 2);
+    const size_t name_x1 = name_x0 + player_name_max_len - 1;
+
+    io::draw_text(name_str,
+                  Panel::screen,
+                  P(name_x0, y_name),
+                  clr_menu_highlight);
+
+    R box_rect(P(name_x0 - 1, y_name - 1),
+               P(name_x1 + 1, y_name + 1));
+
+    io::draw_box(box_rect);
 }
-
-} //Enter_name
-
-void draw_pick_bg(const std::vector<Bg>& bgs, const Menu_browser& browser)
-{
-    render::clear_screen();
-
-    render::draw_text_center("What is your background?",
-                               Panel::screen,
-                               P(MAP_W_HALF, 0),
-                               clr_title,
-                               clr_black,
-                               true);
-
-    int y = OPT_Y0;
-
-    const Bg bg_marked = bgs[browser.y()];
-
-    //------------------------------------------------------------- BACKGROUNDS
-    std::string key_str = "a) ";
-
-    for (const Bg bg : bgs)
-    {
-        const std::string   bg_name     = player_bon::bg_title(bg);
-        const bool          IS_MARKED   = bg == bg_marked;
-        const Clr&          drw_clr     = IS_MARKED ? clr_menu_highlight : clr_menu_drk;
-
-        render::draw_text(key_str + bg_name,
-                          Panel::screen,
-                          P(OPT_X0, y),
-                          drw_clr);
-
-        ++y;
-        ++key_str[0];
-    }
-
-    //------------------------------------------------------------- DESCRIPTION
-    y = DESCR_Y0;
-
-    std::vector<std::string> raw_descr_lines;
-
-    player_bon::bg_descr(bg_marked, raw_descr_lines);
-
-    for (const std::string& raw_line : raw_descr_lines)
-    {
-        std::vector<std::string> formatted_lines;
-
-        text_format::split(raw_line, DESCR_W, formatted_lines);
-
-        for (const std::string& line : formatted_lines)
-        {
-            render::draw_text(line, Panel::screen, P(DESCR_X0, y), clr_white);
-            y++;
-        }
-    }
-
-    render::update_screen();
-}
-
-void pick_bg()
-{
-    if (config::is_bot_playing())
-    {
-        player_bon::pick_bg(Bg(rnd::range(0, int(Bg::END) - 1)));
-    }
-    else //Human playing
-    {
-        std::vector<Bg> bgs;
-        player_bon::pickable_bgs(bgs);
-
-        Menu_browser browser(bgs.size());
-
-        draw_pick_bg(bgs, browser);
-
-        while (true)
-        {
-            const Menu_action action = menu_input::action(browser);
-
-            switch (action)
-            {
-            case Menu_action::moved:
-                draw_pick_bg(bgs, browser);
-                break;
-
-            case Menu_action::selected:
-            case Menu_action::selected_shift:
-                player_bon::pick_bg(bgs[browser.y()]);
-                return;
-
-            case Menu_action::esc:
-            case Menu_action::space:
-                break;
-            }
-        }
-    }
-}
-
-void draw_pick_trait(const std::vector<Trait>& traits, const Menu_browser& browser)
-{
-    render::clear_screen();
-
-    const int CLVL = dungeon_master::clvl();
-
-    std::string title = CLVL == 1 ?
-                        "Which additional trait do you start with?" :
-                        "You have reached a new level! Which trait do you gain?";
-
-    render::draw_text_center(title,
-                               Panel::screen,
-                               P(MAP_W_HALF, 0),
-                               clr_title,
-                               clr_black,
-                               true);
-
-    const Trait trait_marked = traits[browser.y()];
-
-    //------------------------------------------------------------- TRAITS
-    int y = OPT_Y0;
-
-    std::string key_str = "a) ";
-
-    for (const Trait trait : traits)
-    {
-        std::string     trait_name  = player_bon::trait_title(trait);
-        const bool      IS_MARKED   = trait == trait_marked;
-        const Clr&      drw_clr     = IS_MARKED ? clr_menu_highlight : clr_menu_drk;
-
-        render::draw_text(key_str + trait_name,
-                          Panel::screen,
-                          P(OPT_X0, y),
-                          drw_clr);
-
-        ++y;
-        ++key_str[0];
-    }
-
-    //------------------------------------------------------------- DESCRIPTION
-    y = DESCR_Y0;
-
-    std::string descr = player_bon::trait_descr(trait_marked);
-
-    std::vector<std::string> descr_lines;
-
-    text_format::split("Effect(s): " + descr, DESCR_W, descr_lines);
-
-    for (const std::string& str : descr_lines)
-    {
-        render::draw_text(str,
-                          Panel::screen,
-                          P(DESCR_X0, y),
-                          clr_white);
-        ++y;
-    }
-
-    //------------------------------------------------------------- PREREQUISITES
-    const int Y0_PREREQS = 17;
-
-    y = Y0_PREREQS;
-
-    const Bg player_bg = player_bon::bg();
-
-    std::vector<Trait> trait_prereqs;
-
-    Bg bg_prereq = Bg::END;
-
-    player_bon::trait_prereqs(trait_marked, player_bg, trait_prereqs, bg_prereq);
-
-    if (!trait_prereqs.empty() || bg_prereq != Bg::END)
-    {
-        render::draw_text("This trait had the following prerequisite(s):",
-                          Panel::screen, P(DESCR_X0, y), clr_white);
-        ++y;
-
-        std::string prereq_str = "";
-
-        if (bg_prereq != Bg::END)
-        {
-            prereq_str = player_bon::bg_title(bg_prereq);
-        }
-
-        for (Trait prereq_trait : trait_prereqs)
-        {
-            std::string prereq_title = player_bon::trait_title(prereq_trait);
-
-            prereq_str += (prereq_str.empty() ? "" : ", ") + prereq_title;
-        }
-
-        std::vector<std::string> prereq_lines;
-        text_format::split(prereq_str, DESCR_W, prereq_lines);
-
-        for (const std::string& str : prereq_lines)
-        {
-            render::draw_text(str, Panel::screen, P(DESCR_X0, y), clr_white);
-            ++y;
-        }
-    }
-
-    //------------------------------------------------------------- PREVIOUS
-    y = Y0_PREREQS + 4;
-
-    std::string picked_str = player_bon::all_picked_traits_titles_line();
-
-    if (picked_str != "")
-    {
-        picked_str = "Trait(s) gained: " + picked_str;
-
-        std::vector<std::string> picked_lines;
-        text_format::split(picked_str, DESCR_W, picked_lines);
-
-        for (const std::string& str : picked_lines)
-        {
-            render::draw_text(str, Panel::screen, P(DESCR_X0, y), clr_white);
-            ++y;
-        }
-    }
-
-    render::update_screen();
-}
-
-} //namespace
-
-void create_character()
-{
-    pick_bg();
-    pick_new_trait();
-
-    //Some backgrounds and traits may have affected maximum HP and SPI (either positively or
-    //negatively), so here we need to set the current HP and SPI equal to the maximum values.
-    map::player->set_hp_and_spi_to_max();
-
-    enter_name::run();
-}
-
-void pick_new_trait()
-{
-    if (config::is_bot_playing())
-    {
-        return;
-    }
-
-    const Bg player_bg = player_bon::bg();
-
-    std::vector<Trait> pickable_traits;
-    player_bon::pickable_traits(player_bg, pickable_traits);
-
-    if (!pickable_traits.empty())
-    {
-        Menu_browser browser(pickable_traits.size());
-
-        draw_pick_trait(pickable_traits, browser);
-
-        while (true)
-        {
-            const Menu_action action = menu_input::action(browser);
-
-            switch (action)
-            {
-            case Menu_action::moved:
-                draw_pick_trait(pickable_traits, browser);
-                break;
-
-            case Menu_action::selected:
-            case Menu_action::selected_shift:
-                player_bon::pick_trait(pickable_traits[browser.y()]);
-                return;
-
-            case Menu_action::esc:
-            case Menu_action::space:
-                break;
-            }
-        }
-    }
-}
-
-} //Create_character

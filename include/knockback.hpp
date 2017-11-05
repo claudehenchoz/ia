@@ -1,18 +1,19 @@
-#ifndef KNOCKBACK_H
-#define KNOCKBACK_H
+#ifndef KNOCKBACK_HPP
+#define KNOCKBACK_HPP
 
-#include "cmn_types.hpp"
+#include "rl_utils.hpp"
 
 class Actor;
 
-namespace knock_back
+namespace knockback
 {
 
-void try_knock_back(Actor&        defender,
-                    const P&    attacked_from_pos,
-                    const bool    IS_SPIKE_GUN,
-                    const bool    IS_MSG_ALLOWED = true);
+void run(Actor& defender,
+         const P& attacked_from_pos,
+         const bool is_spike_gun,
+         const Verbosity verbosity = Verbosity::verbose,
+         const int paralyze_extra_turns = 0);
 
-} //Knock_back
+} // knockback
 
 #endif

@@ -8,8 +8,7 @@
 #include "map.hpp"
 #include "msg_log.hpp"
 #include "query.hpp"
-#include "render.hpp"
-#include "utils.hpp"
+#include "io.hpp"
 
 namespace close_door
 {
@@ -19,85 +18,88 @@ namespace
 
 void player_try_close_or_jam_feature(Feature* const feature)
 {
-    if (feature->id() != Feature_id::door)
+    if (feature->id() != FeatureId::door)
     {
-        const bool PLAYER_CAN_SEE = map::player->prop_handler().allow_see();
+        const bool player_can_see = map::player->prop_handler().allow_see();
 
-        if (PLAYER_CAN_SEE)
+        if (player_can_see)
         {
-            msg_log::add("I see nothing there to close or jam.");
+            msg_log::add("I see nothing there to close or jam shut.");
         }
-        else //Player cannot see
+        else // Player cannot see
         {
-            msg_log::add("I find nothing there to close or jam.");
+            msg_log::add("I find nothing there to close or jam shut.");
         }
 
         return;
     }
 
-    //This point reached means it's a door
+    // This is a door
 
     Door* const door = static_cast<Door*>(feature);
 
     if (door->is_open())
     {
-        //Door is open, try to close it
+        // Door is open, try to close it
         door->try_close(map::player);
     }
-    else //Door is closed - try to jam it
+    else // Door is closed - try to jam it
     {
-        const bool HAS_SPIKE = map::player->inv().has_item_in_backpack(Item_id::iron_spike);
+        const bool has_spike =
+            map::player->inv().has_item_in_backpack(ItemId::iron_spike);
 
-        if (HAS_SPIKE)
+        if (has_spike)
         {
-            const bool DID_SPIKE_DOOR = door->try_jam(map::player);
+            const bool did_spike_door =
+                door->try_jam(map::player);
 
-            if (DID_SPIKE_DOOR)
+            if (did_spike_door)
             {
-                map::player->inv().decr_item_type_in_backpack(Item_id::iron_spike);
+                map::player->inv().decr_item_type_in_backpack(
+                    ItemId::iron_spike);
 
-                const int SPIKES_LEFT_AFTER =
-                    map::player->inv().item_stack_size_in_backpack(Item_id::iron_spike);
+                const int spikes_left_after =
+                    map::player->inv().item_stack_size_in_backpack(
+                        ItemId::iron_spike);
 
-                if (SPIKES_LEFT_AFTER == 0)
+                if (spikes_left_after == 0)
                 {
                     msg_log::add("I have no iron spikes left.");
                 }
-                else //Has spikes left
+                else // Has spikes left
                 {
-                    msg_log::add("I have " + to_str(SPIKES_LEFT_AFTER) + " iron spikes left.");
+                    msg_log::add("I have " + std::to_string(spikes_left_after) +
+                                 " iron spikes left.");
                 }
             }
         }
-        else //Has no spikes to jam with
+        else // Has no spikes to jam with
         {
             msg_log::add("I have nothing to jam the door with.");
         }
     }
 }
 
-} //namespace
+} // namespace
 
 void player_try_close_or_jam()
 {
     msg_log::clear();
 
-    msg_log::add("Which direction?" + cancel_info_str, clr_white_high);
+    msg_log::add("Which direction?" + cancel_info_str,
+                 clr_white_lgt);
 
-    render::draw_map_and_interface();
-
-    const Dir input_dir = query::dir();
-
-    const P p(map::player->pos + dir_utils::offset(input_dir));
+    const Dir input_dir = query::dir(AllowCenter::no);
 
     msg_log::clear();
 
-    if (p != map::player->pos)
+    if (input_dir != Dir::END && input_dir != Dir::center)
     {
+        // Valid direction
+        const P p(map::player->pos + dir_utils::offset(input_dir));
+
         player_try_close_or_jam_feature(map::cells[p.x][p.y].rigid);
     }
-
-    render::draw_map_and_interface();
 }
 
-} //close
+} // close

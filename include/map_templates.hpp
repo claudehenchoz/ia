@@ -1,77 +1,68 @@
-#ifndef MAPTEMPLATES_H
-#define MAPTEMPLATES_H
+#ifndef MAP_TEMPLATES_HPP
+#define MAP_TEMPLATES_HPP
 
-#include <vector>
 #include <string>
 
-#include "feature_data.hpp"
-#include "item_data.hpp"
-#include "actor_data.hpp"
+#include "room.hpp"
+#include "rl_utils.hpp"
+#include "array2.hpp"
 
-enum class Map_templ_id
+enum class LevelTemplId
 {
     intro_forest,
     egypt,
     leng,
-    rats_in_the_walls,
+    rat_cave,
     boss_level,
     trapez_level,
     END
 };
 
-struct Map_templ_cell
+struct RoomTempl
 {
-    Map_templ_cell(char ch,
-                   Feature_id feature_id = Feature_id::END,
-                   Actor_id actor_id = Actor_id::END,
-                   Item_id item_id = Item_id::END) :
-        ch          (ch),
-        feature_id  (feature_id),
-        actor_id    (actor_id),
-        item_id     (item_id) {}
+    RoomTempl() :
+        symbols         (),
+        type            ((RoomType)0),
+        base_templ_idx  (0)  {}
 
-    char ch;
-    Feature_id feature_id;
-    Actor_id actor_id;
-    Item_id item_id;
+    Array2<char> symbols;
+
+    RoomType type;
+
+    // Eeach template in the data file is automatically rotated/flipped, to
+    // create variants - this is the index of the origin template from the file
+    // (i.e. there will be many templates with index 0, then index 1, etc)
+    size_t base_templ_idx;
 };
 
-struct Map_templ
+enum class RoomTemplStatus
 {
-public:
-    Map_templ()
-    {
-        cells_.clear();
-    }
-
-    const Map_templ_cell& cell(const P& p) const
-    {
-        return cells_[p.y][p.x];
-    }
-
-    void add_row(std::vector<Map_templ_cell>& row)
-    {
-        cells_.push_back(row);
-    }
-
-    P dims() const
-    {
-        return P(cells_.back().size(), cells_.size());
-    }
-
-private:
-    //NOTE: The cells are stored as a "list of rows" - i.e. the inner vector represents the x range,
-    //and the outer vector represents the y range.
-    std::vector< std::vector<Map_templ_cell> > cells_;
+    unused,
+    placed, // Plcaed on the map
+    used    // Included in a map which was not discarded
 };
 
-namespace map_templ_handling
+namespace map_templates
 {
 
 void init();
 
-const Map_templ& templ(const Map_templ_id id);
+void save();
 
-} //map_templ_handling
+void load();
 
-#endif
+const Array2<char>& level_templ(LevelTemplId id);
+
+RoomTempl* random_room_templ(const P& max_dims);
+
+void clear_base_room_templates_used();
+
+void on_base_room_template_placed(const RoomTempl& templ);
+
+void on_map_discarded();
+
+void on_map_ok();
+
+} // map_templates
+
+#endif // MAP_TEMPLATES_HPP

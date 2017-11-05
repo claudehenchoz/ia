@@ -1,11 +1,11 @@
-#ifndef POPULATE_ITEMS_H
-#define POPULATE_ITEMS_H
+#ifndef POPULATE_ITEMS_HPP
+#define POPULATE_ITEMS_HPP
 
 namespace populate_items
 {
 
 void mk_items_on_floor();
 
-} //Populate_items
+} // populate_items
 
-#endif
+#endif // POPULATE_ITEMS_HPP

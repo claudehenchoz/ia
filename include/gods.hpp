@@ -1,5 +1,5 @@
-#ifndef GODS_H
-#define GODS_H
+#ifndef GODS_HPP
+#define GODS_HPP
 
 #include <string>
 #include <vector>
@@ -7,13 +7,16 @@
 struct God
 {
 public:
-    God(const std::string& god_name, const std::string& god_descr) :
-        name_(god_name), descr_(god_descr) {}
+    God(const std::string& god_name,
+        const std::string& god_descr) :
+        name_(god_name),
+        descr_(god_descr) {}
 
     std::string name()   const
     {
         return name_;
     }
+
     std::string descr()  const
     {
         return descr_;
@@ -31,12 +34,12 @@ void init();
 
 bool is_god_lvl();
 
-const God* cur_god();
+const God* current_god();
 
 void set_random_god();
 
 void set_no_god();
 
-} //Gods
+} //gods
 
 #endif

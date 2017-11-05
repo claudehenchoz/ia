@@ -1,176 +1,64 @@
 #include "init.hpp"
 
-#include <SDL.h>
-
-#include "sdl_wrapper.hpp"
-#include "config.hpp"
-#include "render.hpp"
+#include "rl_utils.hpp"
+#include "state.hpp"
+#include "io.hpp"
+#include "init.hpp"
 #include "main_menu.hpp"
-#include "player_bon.hpp"
-#include "bot.hpp"
-#include "create_character.hpp"
-#include "actor_player.hpp"
-#include "map_gen.hpp"
-#include "map_travel.hpp"
-#include "dungeon_master.hpp"
-#include "popup.hpp"
-#include "msg_log.hpp"
-#include "query.hpp"
-#include "highscore.hpp"
-#include "postmortem.hpp"
-#include "map.hpp"
-#include "utils.hpp"
 
 #ifdef _WIN32
 #undef main
 #endif
-int main(int argc, char* argv[])
+int main(int argc, char** argv)
 {
     TRACE_FUNC_BEGIN;
 
+#ifdef NDEBUG
     (void)argc;
     (void)argv;
+#else // NDEBUG
+    for (int arg_nr = 0; arg_nr < argc; ++arg_nr)
+    {
+        const std::string arg_str = std::string(argv[arg_nr]);
+
+        if (arg_str == "--demo-mapgen")
+        {
+            init::is_demo_mapgen = true;
+        }
+    }
+#endif // NDEBUG
+
+    rnd::seed();
 
     init::init_io();
     init::init_game();
 
-    bool quit_game = false;
+    std::unique_ptr<State> main_menu_state(new MainMenuState);
 
-    while (!quit_game)
+    states::push(std::move(main_menu_state));
+
+    // Loop while there is at least one state
+    while (!states::is_empty())
     {
-        init::init_session();
+        states::start();
 
-        int intro_mus_chan = -1;
-        const Game_entry_mode game_entry_type = main_menu::run(quit_game, intro_mus_chan);
-
-        if (!quit_game)
+        if (states::is_empty())
         {
-            init::quit_to_main_menu = false;
-
-            if (game_entry_type == Game_entry_mode::new_game)
-            {
-                if (config::is_bot_playing())
-                {
-                    player_bon::set_all_traits_to_picked();
-                }
-
-                create_character::create_character();
-                map::player->mk_start_items();
-
-                if (config::is_intro_lvl_skipped())
-                {
-                    //Build first dungeon level
-                    map_travel::go_to_nxt();
-                }
-                else //Using intro level
-                {
-                    //Build forest.
-                    render::clear_screen();
-                    render::update_screen();
-                    map_gen::mk_intro_lvl();
-                }
-
-                dungeon_master::set_time_started_to_now();
-                const Time_data& t = dungeon_master::start_time();
-                TRACE << "Game started on: " << t.time_str(Time_type::minute, true)
-                      << std::endl;
-            }
-
-            audio::fade_out_channel(intro_mus_chan);
-
-            map::player->update_fov();
-            render::draw_map_and_interface();
-
-            if (game_entry_type == Game_entry_mode::new_game)
-            {
-                if (!config::is_intro_lvl_skipped())
-                {
-                    const std::string msg =
-                        "I stand on a cobbled forest path, ahead lies a shunned and "
-                        "decrepit old church. In countless dreams this place "
-                        "appeared to me - I know of the things that dwell below, and of the "
-                        "Cult of Starry Wisdom and the monstrous sacrifices dedicated "
-                        "to their overlords. But now they are nothing - only a few deranged "
-                        "fanatics shamble about the corridors, grasping at false "
-                        "promises. I will enter these sprawling catacombs and rob them of "
-                        "treasures and knowledge. But at the depths of the abyss "
-                        "lies my true destiny, an artifact of non-human origin called "
-                        "\"The shining Trapezohedron\" - a window to all secrets of the "
-                        "universe.";
-
-                    popup::show_msg(msg, true, "The story so far...", Sfx_id::END, 1);
-                }
-
-                dungeon_master::add_history_event("Started journey.");
-            }
-
-            //========== M A I N   L O O P ==========
-            while (!init::quit_to_main_menu)
-            {
-                if (map::player->is_alive())
-                {
-                    Actor* const actor = game_time::cur_actor();
-
-                    //Properties running on the actor's turn are not immediately applied
-                    //on the actor, but instead placed in a buffer. This is to ensure
-                    //that e.g. a property set to last one turn actually covers one turn
-                    //(and not applied after the actor acts, and ends before the actor's
-                    //next turn).
-                    //The contents of the buffer are moved to the applied properties here.
-                    actor->prop_handler().apply_actor_turn_prop_buffer();
-
-                    actor->update_clr();
-
-                    const bool ALLOW_ACT  = actor->prop_handler().allow_act();
-                    const bool IS_GIBBED  = actor->state() == Actor_state::destroyed;
-
-                    if (ALLOW_ACT && !IS_GIBBED)
-                    {
-                        //Tell actor to "do something". If this is the player, input is read from
-                        //either the human player or the bot. If it's a monster, the AI handles it.
-                        actor->act();
-                    }
-                    else //Actor cannot act
-                    {
-                        if (actor->is_player())
-                        {
-                            sdl_wrapper::sleep(MS_DELAY_PLAYER_UNABLE_TO_ACT);
-                        }
-
-                        game_time::tick();
-                    }
-                }
-                else //Player is dead
-                {
-                    //Run postmortem, then return to main menu
-                    static_cast<Player*>(map::player)->wait_turns_left = -1;
-
-                    audio::play(Sfx_id::death);
-
-                    msg_log::add("I am dead!",
-                                 clr_msg_bad,
-                                 false,
-                                 More_prompt_on_msg::yes);
-
-                    msg_log::clear();
-
-                    highscore::on_game_over(false);
-
-                    postmortem::run(&quit_game);
-
-                    init::quit_to_main_menu = true;
-                }
-            }
+            break;
         }
 
-        init::cleanup_session();
+        io::clear_screen();
+
+        states::draw();
+
+        io::update_screen();
+
+        states::update();
     }
 
+    init::cleanup_session();
     init::cleanup_game();
     init::cleanup_io();
 
-    TRACE_FUNC_END;
-
     return 0;
 }
-

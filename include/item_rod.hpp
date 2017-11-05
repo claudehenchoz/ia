@@ -1,5 +1,5 @@
-#ifndef ITEM_ROD
-#define ITEM_ROD
+#ifndef ITEM_ROD_HPP
+#define ITEM_ROD_HPP
 
 #include "item.hpp"
 #include "spells.hpp"
@@ -7,7 +7,7 @@
 class Rod: public Item
 {
 public:
-    Rod(Item_data_t* const item_data) :
+    Rod(ItemDataT* const item_data) :
         Item                    (item_data),
         nr_charge_turns_left_   (0) {}
 
@@ -17,14 +17,14 @@ public:
 
     void load() override final;
 
-    Consume_item activate(Actor* const actor) override final;
+    ConsumeItem activate(Actor* const actor) override final;
 
     Clr interface_clr() const override final
     {
         return clr_violet;
     }
 
-    void on_std_turn_in_inv(const Inv_type inv_type) override final;
+    void on_std_turn_in_inv(const InvType inv_type) override final;
 
     std::vector<std::string> descr() const override final;
 
@@ -35,44 +35,28 @@ public:
 protected:
     virtual std::string descr_identified() const = 0;
 
-    virtual void activate_impl() = 0;
+    virtual void run_effect() = 0;
+
+    virtual int nr_turns_to_recharge() const
+    {
+        return 250;
+    }
 
     std::string name_inf() const override final;
+
+    void set_max_charge_turns_left();
 
 private:
     int nr_charge_turns_left_;
 };
 
-class Rod_purge_invis : public Rod
+class RodCuring : public Rod
 {
 public:
-    Rod_purge_invis(Item_data_t* const item_data) :
+    RodCuring(ItemDataT* const item_data) :
         Rod(item_data) {}
 
-    ~Rod_purge_invis() {}
-
-    const std::string real_name() const override
-    {
-        return "Purge Invisible";
-    }
-
-protected:
-    std::string descr_identified() const override
-    {
-        return "When activated, this device reveals any hidden or invisible creatures in the area "
-               "around the user.";
-    }
-
-    void activate_impl() override;
-};
-
-class Rod_curing : public Rod
-{
-public:
-    Rod_curing(Item_data_t* const item_data) :
-        Rod(item_data) {}
-
-    ~Rod_curing() {}
+    ~RodCuring() {}
 
     const std::string real_name() const override
     {
@@ -82,20 +66,22 @@ public:
 protected:
     std::string descr_identified() const override
     {
-        return "When activated, this device cures blindness, poisoning, infections, disease, "
-               "and weakening, and restores the consumers health by a small amount.";
+        return
+            "When activated, this device cures blindness, poisoning, "
+            "infections, disease, weakening, and life sapping, and restores "
+            "the user's health by a small amount.";
     }
 
-    void activate_impl() override;
+    void run_effect() override;
 };
 
-class Rod_opening : public Rod
+class RodOpening : public Rod
 {
 public:
-    Rod_opening(Item_data_t* const item_data) :
+    RodOpening(ItemDataT* const item_data) :
         Rod(item_data) {}
 
-    ~Rod_opening() {}
+    ~RodOpening() {}
 
     const std::string real_name() const override
     {
@@ -105,20 +91,22 @@ public:
 protected:
     std::string descr_identified() const override
     {
-        return "When activated, this device opens all locks, lids and doors in the surrounding "
-               "area.";
+        return
+            "When activated, this device opens all locks, lids and doors in "
+            "the surrounding area (except heavy doors operated externally by "
+            "a switch).";
     }
 
-    void activate_impl() override;
+    void run_effect() override;
 };
 
-class Rod_bless : public Rod
+class RodBless : public Rod
 {
 public:
-    Rod_bless(Item_data_t* const item_data) :
+    RodBless(ItemDataT* const item_data) :
         Rod(item_data) {}
 
-    ~Rod_bless() {}
+    ~RodBless() {}
 
     const std::string real_name() const override
     {
@@ -128,16 +116,73 @@ public:
 protected:
     std::string descr_identified() const override
     {
-        return "When activated, this device bends the universe in favor of the caster for a while.";
+        return
+            "When activated, this device bends reality in favor of the "
+            "user for a while.";
     }
 
-    void activate_impl() override;
+    void run_effect() override;
+};
+
+class RodCloudMinds : public Rod
+{
+public:
+    RodCloudMinds(ItemDataT* const item_data) :
+        Rod(item_data) {}
+
+    ~RodCloudMinds() {}
+
+    const std::string real_name() const override
+    {
+        return "Cloud Minds";
+    }
+
+protected:
+    std::string descr_identified() const override
+    {
+        return
+            "When activated, this device clouds the memories of all "
+            "creatures in the area, causing them to forget the presence of "
+            "the user.";
+    }
+
+    virtual int nr_turns_to_recharge() const override
+    {
+        return 90;
+    }
+
+    void run_effect() override;
+};
+
+class RodShockwave : public Rod
+{
+public:
+    RodShockwave(ItemDataT* const item_data) :
+        Rod(item_data) {}
+
+    ~RodShockwave() {}
+
+    const std::string real_name() const override
+    {
+        return "Shockwave";
+    }
+
+protected:
+    std::string descr_identified() const override
+    {
+        return
+            "When activated, this device generates a shock wave which "
+            "violently pushes away any adjacent creatures and destroys "
+            "structures.";
+    }
+
+    void run_effect() override;
 };
 
 namespace rod_handling
 {
 
-struct Rod_look
+struct RodLook
 {
     std::string name_plain;
     std::string name_a;
@@ -151,4 +196,4 @@ void load();
 
 } //rod_handling
 
-#endif // ITEM_ROD
+#endif // ITEM_ROD_HPP

@@ -1,5 +1,5 @@
-#ifndef FEATURE_MOB_H
-#define FEATURE_MOB_H
+#ifndef FEATURE_MOB_HPP
+#define FEATURE_MOB_HPP
 
 #include "feature.hpp"
 
@@ -12,7 +12,7 @@ public:
 
     virtual ~Mob() {}
 
-    virtual Feature_id id() const override = 0;
+    virtual FeatureId id() const override = 0;
 
     virtual std::string name(const Article article) const override = 0;
 
@@ -27,8 +27,8 @@ public:
 class Smoke: public Mob
 {
 public:
-    Smoke(const P& feature_pos, const int NR_TURNS) :
-        Mob(feature_pos), nr_turns_left_(NR_TURNS) {}
+    Smoke(const P& feature_pos, const int nr_turns) :
+        Mob(feature_pos), nr_turns_left_(nr_turns) {}
 
     //Spawn-by-id compliant ctor (do not use for normal cases):
     Smoke(const P& feature_pos) : Mob(feature_pos), nr_turns_left_(-1) {}
@@ -36,9 +36,9 @@ public:
     Smoke() = delete;
     ~Smoke() {}
 
-    Feature_id id() const override
+    FeatureId id() const override
     {
-        return Feature_id::smoke;
+        return FeatureId::smoke;
     }
 
     std::string name(const Article article)  const override;
@@ -50,22 +50,22 @@ protected:
     int nr_turns_left_;
 };
 
-class Lit_dynamite: public Mob
+class LitDynamite: public Mob
 {
 public:
-    Lit_dynamite(const P& feature_pos, const int NR_TURNS) :
-        Mob(feature_pos), nr_turns_left_(NR_TURNS) {}
+    LitDynamite(const P& feature_pos, const int nr_turns) :
+        Mob(feature_pos), nr_turns_left_(nr_turns) {}
 
     //Spawn-by-id compliant ctor (do not use for normal cases):
-    Lit_dynamite(const P& feature_pos) : Mob(feature_pos), nr_turns_left_(-1) {}
+    LitDynamite(const P& feature_pos) : Mob(feature_pos), nr_turns_left_(-1) {}
 
-    Lit_dynamite() = delete;
+    LitDynamite() = delete;
 
-    ~Lit_dynamite() {}
+    ~LitDynamite() {}
 
-    Feature_id id() const override
+    FeatureId id() const override
     {
-        return Feature_id::lit_dynamite;
+        return FeatureId::lit_dynamite;
     }
 
     std::string name(const Article article) const override;
@@ -73,7 +73,7 @@ public:
     Clr clr() const override;
 
     //TODO: Lit dynamite should add light on their own cell (just one cell)
-    //void add_light(bool light[MAP_W][MAP_H]) const;
+    //void add_light(bool light[map_w][map_h]) const;
 
     void on_new_turn() override;
 
@@ -81,22 +81,22 @@ private:
     int nr_turns_left_;
 };
 
-class Lit_flare: public Mob
+class LitFlare: public Mob
 {
 public:
-    Lit_flare(const P& feature_pos, const int NR_TURNS) :
-        Mob(feature_pos), nr_turns_left_(NR_TURNS) {}
+    LitFlare(const P& feature_pos, const int nr_turns) :
+        Mob(feature_pos), nr_turns_left_(nr_turns) {}
 
     //Spawn-by-id compliant ctor (do not use for normal cases):
-    Lit_flare(const P& feature_pos) : Mob(feature_pos), nr_turns_left_(-1) {}
+    LitFlare(const P& feature_pos) : Mob(feature_pos), nr_turns_left_(-1) {}
 
-    Lit_flare() = delete;
+    LitFlare() = delete;
 
-    ~Lit_flare() {}
+    ~LitFlare() {}
 
-    Feature_id id() const override
+    FeatureId id() const override
     {
-        return Feature_id::lit_flare;
+        return FeatureId::lit_flare;
     }
 
     std::string name(const Article article) const override;
@@ -105,7 +105,7 @@ public:
 
     void on_new_turn() override;
 
-    void add_light(bool light[MAP_W][MAP_H]) const;
+    void add_light(bool light[map_w][map_h]) const override;
 
 private:
     int nr_turns_left_;

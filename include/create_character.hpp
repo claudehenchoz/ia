@@ -1,15 +1,93 @@
-#ifndef CREATE_CHARACTER_H
-#define CREATE_CHARACTER_H
+#ifndef CREATE_CHARACTER_HPP
+#define CREATE_CHARACTER_HPP
 
-namespace create_character
+#include "state.hpp"
+#include "player_bon.hpp"
+#include "browser.hpp"
+
+enum class TraitScreenMode
 {
+    pick_new,
+    view_unavail
+};
 
-extern const int OPT_H;
+class NewGameState: public State
+{
+public:
+    NewGameState();
 
-void create_character();
+    ~NewGameState();
 
-void pick_new_trait();
+    void on_pushed() override;
 
-} //Create_character
+    void on_resume() override;
 
-#endif
+    StateId id() override;
+};
+
+class PickBgState: public State
+{
+public:
+    PickBgState();
+
+    ~PickBgState();
+
+    void on_start() override;
+
+    void update() override;
+
+    void draw() override;
+
+    StateId id() override;
+
+private:
+    MenuBrowser browser_;
+
+    std::vector<Bg> bgs_;
+};
+
+class PickTraitState: public State
+{
+public:
+    PickTraitState();
+
+    ~PickTraitState();
+
+    void on_start() override;
+
+    void update() override;
+
+    void draw() override;
+
+    StateId id() override;
+
+private:
+    MenuBrowser browser_traits_avail_;
+    MenuBrowser browser_traits_unavail_;
+
+    std::vector<Trait> traits_avail_;
+    std::vector<Trait> traits_unavail_;
+
+    TraitScreenMode screen_mode_;
+};
+
+class EnterNameState: public State
+{
+public:
+    EnterNameState();
+
+    ~EnterNameState();
+
+    void on_start() override;
+
+    void update() override;
+
+    void draw() override;
+
+    StateId id() override;
+
+private:
+    std::string current_str_;
+};
+
+#endif // CREATE_CHARACTER_HPP

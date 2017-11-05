@@ -1,41 +1,47 @@
-//NOTE: This file must not define "ROOM_H" for the include guard. That name should be
-//reserved for constants representing room height.
-#ifndef MAPGEN_ROOM_H
-#define MAPGEN_ROOM_H
+#ifndef ROOM_HPP
+#define ROOM_HPP
 
 #include <vector>
-#ifdef MACOSX
-#include <numeric>
-#endif
 
-#include "cmn_types.hpp"
-#include "cmn_data.hpp"
+#include "rl_utils.hpp"
+#include "global.hpp"
+#include "feature_data.hpp"
 
-//---------------------------------------------------------------------------------------
-// Room theming occurs both before and after rooms are connected (pre/post-connect).
-//   > In pre-connect reshaping is done. The reshaping is called from map_gen_utils
-//     (e.g. plus-shape, cavern-shape, pillars, etc)
 //
-//     When pre-connect starts, it is assumed that all (standard) rooms are rectangular
-//     with unbroken walls.
+// Room theming occurs both pre- and post-connect (before/after corridors).
 //
-//   > In post-connect, auto-features such as chests and altars are placed (this is
-//     configured in the feature data), as well as room-specific stuff like trees, altars,
-//     etc. It can then be verified for each feature that the map is still connected.
+//  >   In pre-connect, reshaping is performed, e.g. plus-shape, cavern-shape,
+//      pillars, etc)
 //
-// As a rule of thumb, place walkable features in the pre-connect step, and blocking
-// features in the post-connect step.
-//---------------------------------------------------------------------------------------
+//      When pre-connect starts, it is assumed that all (standard) rooms are
+//      rectangular with unbroken walls.
+//
+//  >   In post-connect, auto-features such as chests and altars are placed,
+//      as well as room-specific stuff like trees, altars, etc. It can then
+//      be verified for each feature that the map is still connected.
+//
+// As a rule of thumb, place walkable features in the pre-connect step, and
+// blocking features in the post-connect step.
+//
 
-struct  Feature_data_t;
-class   Room;
+//
+// NOTE: There are both RoomType ids, and Room classes. A room of a certain
+//       RoomType id does NOT have to be of the corresponding Room child class.
+//       For example, templated rooms are always created as the TemplateRoom
+//       class, but they may have any standard room RoomType id. There may even
+//       be RoomType ids which doesn't have a corresponding Room class at all.
+//
 
-enum class Room_type
+struct FeatureDataT;
+class Room;
+
+enum class RoomType
 {
-    //Standard rooms (standardized feature spawning and reshaping)
-    plain, //NOTE: "plain" must be the first type
+    // Standard rooms (standardized feature spawning and reshaping)
+    plain, // NOTE: "plain" must be the first type
     human,
     ritual,
+    jail,
     spider,
     snake_pit,
     crypt,
@@ -47,10 +53,24 @@ enum class Room_type
     forest,
     END_OF_STD_ROOMS,
 
-    //Exceptional room types
+    // Special room types
     corr_link,
     crumble_room,
     river
+};
+
+struct RoomAutoFeatureRule
+{
+    RoomAutoFeatureRule() :
+        feature_id  (FeatureId::END),
+        nr_allowed  (0) {}
+
+    RoomAutoFeatureRule(const FeatureId id, const int nr_allowed) :
+        feature_id  (id),
+        nr_allowed  (nr_allowed) {}
+
+    FeatureId feature_id;
+    int nr_allowed;
 };
 
 namespace room_factory
@@ -58,44 +78,56 @@ namespace room_factory
 
 void init_room_bucket();
 
-//NOTE: These functions do not make rooms on the map, they merely create Room objects.
-Room* mk(const Room_type type, const Rect& r);
+// NOTE: These functions do not make rooms on the map, just create Room objects.
+//       Use the "mk_room..." functions in the map generator for a convenient
+//       way to generate rooms on the map.
+Room* mk(const RoomType type, const R& r);
 
-Room* mk_random_allowed_std_room(const Rect& r, const bool IS_SUBROOM);
+Room* mk_random_room(const R& r, const IsSubRoom is_subroom);
 
-} //Room_factory
+} // room_factory
 
 class Room
 {
 public:
-    Room(Rect r, Room_type type);
+    Room(R r, RoomType type);
 
     Room() = delete;
 
     virtual ~Room() {}
 
-    virtual void on_pre_connect(bool door_proposals[MAP_W][MAP_H]) = 0;
-    virtual void on_post_connect(bool door_proposals[MAP_W][MAP_H]) = 0;
+    virtual void on_pre_connect(bool door_proposals[map_w][map_h]) = 0;
+    virtual void on_post_connect(bool door_proposals[map_w][map_h]) = 0;
 
-    Rect                r_;
-    const Room_type     type_;
-    bool                is_sub_room_;
-    std::vector<Room*>  rooms_con_to_;
-    std::vector<Room*>  sub_rooms_;
+    virtual int max_nr_mon_groups_spawned() const
+    {
+        return 3;
+    }
+
+    virtual bool allow_sub_rooms() const
+    {
+        return true;
+    }
+
+    R r_;
+    const RoomType type_;
+    bool is_sub_room_;
+    std::vector<Room*> rooms_con_to_;
+    std::vector<Room*> sub_rooms_;
 
 protected:
     void mk_drk() const;
 };
 
-class Std_room : public Room
+class StdRoom : public Room
 {
 public:
-    Std_room(Rect r, Room_type type) : Room(r, type) {}
+    StdRoom(R r, RoomType type) : Room(r, type) {}
 
-    virtual ~Std_room() {}
+    virtual ~StdRoom() {}
 
-    void on_pre_connect(bool door_proposals[MAP_W][MAP_H]) override final;
-    void on_post_connect(bool door_proposals[MAP_W][MAP_H]) override final;
+    void on_pre_connect(bool door_proposals[map_w][map_h]) override final;
+    void on_post_connect(bool door_proposals[map_w][map_h]) override final;
 
     virtual bool is_allowed() const
     {
@@ -103,277 +135,326 @@ public:
     }
 
 protected:
-    virtual Range nr_auto_features_allowed() const = 0;
-
-    virtual int base_pct_chance_drk() const = 0;
-
-    size_t try_auto_feature_placement(
-        const std::vector<P>& adj_to_walls,
-        const std::vector<P>& away_from_walls,
-        const std::vector<const Feature_data_t*>& feature_data_bucket,
-        P& pos_ref) const;
-
-    int place_auto_features();
-
-    virtual void on_pre_connect_hook(bool door_proposals[MAP_W][MAP_H]) = 0;
-    virtual void on_post_connect_hook(bool door_proposals[MAP_W][MAP_H]) = 0;
-};
-
-class Plain_room: public Std_room
-{
-public:
-    Plain_room(Rect r) : Std_room(r, Room_type::plain) {}
-
-    ~Plain_room() {}
-
-protected:
-    Range nr_auto_features_allowed() const override;
-    int base_pct_chance_drk() const override;
-    void on_pre_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-    void on_post_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-};
-
-class Human_room: public Std_room
-{
-public:
-    Human_room(Rect r) :
-        Std_room(r, Room_type::human) {}
-
-    ~Human_room() {}
-
-    bool is_allowed() const override;
-
-protected:
-    Range nr_auto_features_allowed() const override;
-    int base_pct_chance_drk() const override;
-    void on_pre_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-    void on_post_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-};
-
-class Ritual_room: public Std_room
-{
-public:
-    Ritual_room(Rect r) :
-        Std_room(r, Room_type::ritual) {}
-
-    ~Ritual_room() {}
-
-    bool is_allowed() const override;
-
-protected:
-    Range nr_auto_features_allowed() const override;
-    int base_pct_chance_drk() const override;
-    void on_pre_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-    void on_post_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-};
-
-class Spider_room: public Std_room
-{
-public:
-    Spider_room(Rect r) :
-        Std_room(r, Room_type::spider) {}
-
-    ~Spider_room() {}
-
-    bool is_allowed() const override;
-
-protected:
-    Range nr_auto_features_allowed() const override;
-    int base_pct_chance_drk() const override;
-    void on_pre_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-    void on_post_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-};
-
-class Snake_pit_room: public Std_room
-{
-public:
-    Snake_pit_room(Rect r) :
-        Std_room(r, Room_type::monster) {}
-
-    ~Snake_pit_room() {}
-
-    bool is_allowed() const override;
-
-protected:
-    Range nr_auto_features_allowed() const override
+    virtual std::vector<RoomAutoFeatureRule> auto_features_allowed() const
     {
-        return Range(0, 0);
+        return {};
     }
 
-    int base_pct_chance_drk() const override;
-    void on_pre_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-    void on_post_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-};
+    P find_auto_feature_placement(const std::vector<P>& adj_to_walls,
+                                  const std::vector<P>& away_from_walls,
+                                  const FeatureId id) const;
 
-class Crypt_room: public Std_room
-{
-public:
-    Crypt_room(Rect r) :
-        Std_room(r, Room_type::crypt) {}
+    void place_auto_features();
 
-    ~Crypt_room() {}
-
-    bool is_allowed() const override;
-
-protected:
-    Range nr_auto_features_allowed() const override;
-    int base_pct_chance_drk() const override;
-    void on_pre_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-    void on_post_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-};
-
-class Monster_room: public Std_room
-{
-public:
-    Monster_room(Rect r) :
-        Std_room(r, Room_type::monster) {}
-
-    ~Monster_room() {}
-
-    bool is_allowed() const override;
-
-protected:
-    Range nr_auto_features_allowed() const override;
-    int base_pct_chance_drk() const override;
-    void on_pre_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-    void on_post_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-};
-
-class Flooded_room: public Std_room
-{
-public:
-    Flooded_room(Rect r) :
-        Std_room(r, Room_type::flooded) {}
-
-    ~Flooded_room() {}
-
-    bool is_allowed() const override;
-
-protected:
-    Range nr_auto_features_allowed() const override;
-    int base_pct_chance_drk() const override;
-    void on_pre_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-    void on_post_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-};
-
-class Muddy_room: public Std_room
-{
-public:
-    Muddy_room(Rect r) :
-        Std_room(r, Room_type::muddy) {}
-
-    ~Muddy_room() {}
-
-    bool is_allowed() const override;
-
-protected:
-    Range nr_auto_features_allowed() const override;
-    int base_pct_chance_drk() const override;
-    void on_pre_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-    void on_post_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-};
-
-class Cave_room: public Std_room
-{
-public:
-    Cave_room(Rect r) :
-        Std_room(r, Room_type::cave) {}
-
-    ~Cave_room() {}
-
-    bool is_allowed() const override;
-
-protected:
-    Range nr_auto_features_allowed() const override;
-    int base_pct_chance_drk() const override;
-    void on_pre_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-    void on_post_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-};
-
-class Chasm_room: public Std_room
-{
-public:
-    Chasm_room(Rect r) :
-        Std_room(r, Room_type::chasm) {}
-
-    ~Chasm_room() {}
-
-    bool is_allowed() const override;
-
-protected:
-    Range nr_auto_features_allowed() const override;
-    int base_pct_chance_drk() const override;
-    void on_pre_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-    void on_post_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-};
-
-class Forest_room: public Std_room
-{
-public:
-    Forest_room(Rect r) :
-        Std_room(r, Room_type::forest) {}
-
-    ~Forest_room() {}
-
-    bool is_allowed() const override;
-
-protected:
-    Range nr_auto_features_allowed() const override;
-    int base_pct_chance_drk() const override;
-    void on_pre_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-    void on_post_connect_hook(bool door_proposals[MAP_W][MAP_H]) override;
-};
-
-class Corr_link_room: public Room
-{
-public:
-    Corr_link_room(const Rect& r) :
-        Room(r, Room_type::corr_link) {}
-
-    ~Corr_link_room() {}
-
-    void on_pre_connect(bool door_proposals[MAP_W][MAP_H]) override
+    virtual void on_pre_connect_hook(bool door_proposals[map_w][map_h])
     {
         (void)door_proposals;
     }
 
-    void on_post_connect(bool door_proposals[MAP_W][MAP_H]) override
+    virtual void on_post_connect_hook(bool door_proposals[map_w][map_h])
     {
         (void)door_proposals;
     }
 };
 
-class Crumble_room: public Room
+class PlainRoom: public StdRoom
 {
 public:
-    Crumble_room(const Rect& r) :
-        Room(r, Room_type::crumble_room) {}
+    PlainRoom(R r) : StdRoom(r, RoomType::plain) {}
 
-    ~Crumble_room() {}
+    ~PlainRoom() {}
 
-    void on_pre_connect(bool door_proposals[MAP_W][MAP_H]) override
+protected:
+    std::vector<RoomAutoFeatureRule> auto_features_allowed() const override;
+
+    void on_pre_connect_hook(bool door_proposals[map_w][map_h]) override;
+
+    void on_post_connect_hook(bool door_proposals[map_w][map_h]) override;
+};
+
+class HumanRoom: public StdRoom
+{
+public:
+    HumanRoom(R r) :
+        StdRoom(r, RoomType::human) {}
+
+    ~HumanRoom() {}
+
+    bool is_allowed() const override;
+
+protected:
+    std::vector<RoomAutoFeatureRule> auto_features_allowed() const override;
+
+    void on_pre_connect_hook(bool door_proposals[map_w][map_h]) override;
+
+    void on_post_connect_hook(bool door_proposals[map_w][map_h]) override;
+};
+
+class JailRoom: public StdRoom
+{
+public:
+    JailRoom(R r) :
+        StdRoom(r, RoomType::jail) {}
+
+    ~JailRoom() {}
+
+protected:
+    std::vector<RoomAutoFeatureRule> auto_features_allowed() const override;
+
+    void on_pre_connect_hook(bool door_proposals[map_w][map_h]) override;
+
+    void on_post_connect_hook(bool door_proposals[map_w][map_h]) override;
+};
+
+class RitualRoom: public StdRoom
+{
+public:
+    RitualRoom(R r) :
+        StdRoom(r, RoomType::ritual) {}
+
+    ~RitualRoom() {}
+
+    bool is_allowed() const override;
+
+protected:
+    std::vector<RoomAutoFeatureRule> auto_features_allowed() const override;
+
+    void on_pre_connect_hook(bool door_proposals[map_w][map_h]) override;
+
+    void on_post_connect_hook(bool door_proposals[map_w][map_h]) override;
+};
+
+class SpiderRoom: public StdRoom
+{
+public:
+    SpiderRoom(R r) :
+        StdRoom(r, RoomType::spider) {}
+
+    ~SpiderRoom() {}
+
+    bool is_allowed() const override;
+
+    int max_nr_mon_groups_spawned() const override
+    {
+        return 1;
+    }
+
+protected:
+    std::vector<RoomAutoFeatureRule> auto_features_allowed() const override;
+
+    void on_pre_connect_hook(bool door_proposals[map_w][map_h]) override;
+
+    void on_post_connect_hook(bool door_proposals[map_w][map_h]) override;
+};
+
+class SnakePitRoom: public StdRoom
+{
+public:
+    SnakePitRoom(R r) :
+        StdRoom(r, RoomType::monster) {}
+
+    ~SnakePitRoom() {}
+
+    bool is_allowed() const override;
+
+protected:
+    std::vector<RoomAutoFeatureRule> auto_features_allowed() const override;
+
+    void on_pre_connect_hook(bool door_proposals[map_w][map_h]) override;
+
+    void on_post_connect_hook(bool door_proposals[map_w][map_h]) override;
+};
+
+class CryptRoom: public StdRoom
+{
+public:
+    CryptRoom(R r) :
+        StdRoom(r, RoomType::crypt) {}
+
+    ~CryptRoom() {}
+
+    bool is_allowed() const override;
+
+protected:
+    std::vector<RoomAutoFeatureRule> auto_features_allowed() const override;
+
+    void on_pre_connect_hook(bool door_proposals[map_w][map_h]) override;
+
+    void on_post_connect_hook(bool door_proposals[map_w][map_h]) override;
+};
+
+class MonsterRoom: public StdRoom
+{
+public:
+    MonsterRoom(R r) :
+        StdRoom(r, RoomType::monster) {}
+
+    ~MonsterRoom() {}
+
+    bool is_allowed() const override;
+
+protected:
+    std::vector<RoomAutoFeatureRule> auto_features_allowed() const override;
+
+    void on_pre_connect_hook(bool door_proposals[map_w][map_h]) override;
+
+    void on_post_connect_hook(bool door_proposals[map_w][map_h]) override;
+};
+
+class FloodedRoom: public StdRoom
+{
+public:
+    FloodedRoom(R r) :
+        StdRoom(r, RoomType::flooded) {}
+
+    ~FloodedRoom() {}
+
+    bool is_allowed() const override;
+
+protected:
+    std::vector<RoomAutoFeatureRule> auto_features_allowed() const override;
+
+    void on_pre_connect_hook(bool door_proposals[map_w][map_h]) override;
+
+    void on_post_connect_hook(bool door_proposals[map_w][map_h]) override;
+};
+
+class MuddyRoom: public StdRoom
+{
+public:
+    MuddyRoom(R r) :
+        StdRoom(r, RoomType::muddy) {}
+
+    ~MuddyRoom() {}
+
+    bool is_allowed() const override;
+
+protected:
+    std::vector<RoomAutoFeatureRule> auto_features_allowed() const override;
+
+    void on_pre_connect_hook(bool door_proposals[map_w][map_h]) override;
+
+    void on_post_connect_hook(bool door_proposals[map_w][map_h]) override;
+};
+
+class CaveRoom: public StdRoom
+{
+public:
+    CaveRoom(R r) :
+        StdRoom(r, RoomType::cave) {}
+
+    ~CaveRoom() {}
+
+    bool is_allowed() const override;
+
+protected:
+    std::vector<RoomAutoFeatureRule> auto_features_allowed() const override;
+
+    void on_pre_connect_hook(bool door_proposals[map_w][map_h]) override;
+
+    void on_post_connect_hook(bool door_proposals[map_w][map_h]) override;
+};
+
+class ChasmRoom: public StdRoom
+{
+public:
+    ChasmRoom(R r) :
+        StdRoom(r, RoomType::chasm) {}
+
+    ~ChasmRoom() {}
+
+    bool is_allowed() const override;
+
+protected:
+    std::vector<RoomAutoFeatureRule> auto_features_allowed() const override;
+
+    void on_pre_connect_hook(bool door_proposals[map_w][map_h]) override;
+
+    void on_post_connect_hook(bool door_proposals[map_w][map_h]) override;
+};
+
+class ForestRoom: public StdRoom
+{
+public:
+    ForestRoom(R r) :
+        StdRoom(r, RoomType::forest) {}
+
+    ~ForestRoom() {}
+
+    bool is_allowed() const override;
+
+protected:
+    std::vector<RoomAutoFeatureRule> auto_features_allowed() const override;
+
+    void on_pre_connect_hook(bool door_proposals[map_w][map_h]) override;
+
+    void on_post_connect_hook(bool door_proposals[map_w][map_h]) override;
+};
+
+class TemplateRoom: public StdRoom
+{
+public:
+    TemplateRoom(const R& r, RoomType type) :
+        StdRoom(r, type) {}
+
+    ~TemplateRoom() {}
+
+    bool allow_sub_rooms() const override
+    {
+        return false;
+    }
+};
+
+class CorrLinkRoom: public Room
+{
+public:
+    CorrLinkRoom(const R& r) :
+        Room(r, RoomType::corr_link) {}
+
+    ~CorrLinkRoom() {}
+
+    void on_pre_connect(bool door_proposals[map_w][map_h]) override
     {
         (void)door_proposals;
     }
 
-    void on_post_connect(bool door_proposals[MAP_W][MAP_H]) override
+    void on_post_connect(bool door_proposals[map_w][map_h]) override
     {
         (void)door_proposals;
     }
 };
 
-class River_room: public Room
+class CrumbleRoom: public Room
 {
 public:
-    River_room(const Rect& r) :
-        Room    (r, Room_type::river),
+    CrumbleRoom(const R& r) :
+        Room(r, RoomType::crumble_room) {}
+
+    ~CrumbleRoom() {}
+
+    void on_pre_connect(bool door_proposals[map_w][map_h]) override
+    {
+        (void)door_proposals;
+    }
+
+    void on_post_connect(bool door_proposals[map_w][map_h]) override
+    {
+        (void)door_proposals;
+    }
+};
+
+class RiverRoom: public Room
+{
+public:
+    RiverRoom(const R& r) :
+        Room    (r, RoomType::river),
         axis_   (Axis::hor) {}
 
-    ~River_room() {}
+    ~RiverRoom() {}
 
-    void on_pre_connect(bool door_proposals[MAP_W][MAP_H]) override;
+    void on_pre_connect(bool door_proposals[map_w][map_h]) override;
 
-    void on_post_connect(bool door_proposals[MAP_W][MAP_H]) override
+    void on_post_connect(bool door_proposals[map_w][map_h]) override
     {
         (void)door_proposals;
     }
@@ -381,4 +462,4 @@ public:
     Axis axis_;
 };
 
-#endif
+#endif // ROOM_HPP

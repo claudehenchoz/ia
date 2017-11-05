@@ -1,13 +1,10 @@
-#ifndef INSANITY
-#define INSANITY
+#ifndef INSANITY_HPP
+#define INSANITY_HPP
 
 #include <vector>
 #include <string>
 
-#include "cmn_data.hpp"
-#include "converters.hpp"
-
-enum class Ins_sympt_id
+enum class InsSymptId
 {
     scream,
     babbling,
@@ -25,27 +22,31 @@ enum class Ins_sympt_id
     masoch,
     sadism,
     shadows,
-    paranoia, //Invisible stalker spawned
+    paranoia, // Invisible stalker spawned
     confusion,
     frenzy,
     strange_sensation,
     END
 };
 
+enum class InsSymptType
+{
+    phobia,
+    misc
+};
+
 class Actor;
 
-class Ins_sympt
+class InsSympt
 {
 public:
-    Ins_sympt(const Ins_sympt_id id) :
-        id_ (id) {}
+    InsSympt() {}
 
-    virtual ~Ins_sympt() {}
+    virtual ~InsSympt() {}
 
-    Ins_sympt_id id() const
-    {
-        return id_;
-    }
+    virtual InsSymptId id() const = 0;
+
+    virtual InsSymptType type() const = 0;
 
     virtual void save() const {}
 
@@ -53,7 +54,7 @@ public:
 
     virtual bool is_permanent() const = 0;
 
-    virtual bool allow_gain() const
+    virtual bool is_allowed() const
     {
         return true;
     }
@@ -66,6 +67,8 @@ public:
     {
         (void)seen_foes;
     }
+
+    virtual void on_permanent_rfear() {}
 
     virtual std::string char_descr_msg() const
     {
@@ -94,22 +97,30 @@ protected:
     {
         return "";
     }
-
-    const Ins_sympt_id id_;
 };
 
-class Ins_scream : public Ins_sympt
+class InsScream : public InsSympt
 {
 public:
-    Ins_scream() :
-        Ins_sympt(Ins_sympt_id::scream) {}
+    InsScream() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::scream;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::misc;
+    }
 
     bool is_permanent() const override
     {
         return false;
     }
 
-    bool allow_gain() const override;
+    bool is_allowed() const override;
 
 protected:
     void on_start_hook() override;
@@ -127,18 +138,40 @@ protected:
     }
 };
 
-class Ins_babbling : public Ins_sympt
+class InsBabbling : public InsSympt
 {
 public:
-    Ins_babbling() :
-        Ins_sympt(Ins_sympt_id::babbling) {}
+    InsBabbling() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::babbling;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::misc;
+    }
 
     bool is_permanent() const override
     {
-        return false;
+        return true;
     }
 
     void on_new_player_turn(const std::vector<Actor*>& seen_foes) override;
+
+    std::string char_descr_msg() const override
+    {
+        return "Tends to babble in a peculiar language";
+    }
+
+    std::string postmortem_msg() const override
+    {
+        return "Had a tendency to babble in a peculiar language";
+    }
+
+    void babble() const;
 
 protected:
     void on_start_hook() override;
@@ -153,24 +186,44 @@ protected:
         return "Babbling!";
     }
 
+    std::string end_msg() const override
+    {
+        return "I feel in control of my speech.";
+    }
+
     std::string history_msg() const override
     {
         return "Started babbling incoherently.";
     }
+
+    std::string history_msg_end() const override
+    {
+        return "My strange babbling was cured.";
+    }
 };
 
-class Ins_faint : public Ins_sympt
+class InsFaint : public InsSympt
 {
 public:
-    Ins_faint() :
-        Ins_sympt(Ins_sympt_id::faint) {}
+    InsFaint() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::faint;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::misc;
+    }
 
     bool is_permanent() const override
     {
         return false;
     }
 
-    bool allow_gain() const override;
+    bool is_allowed() const override;
 
 protected:
     void on_start_hook() override;
@@ -191,11 +244,21 @@ protected:
     }
 };
 
-class Ins_laugh : public Ins_sympt
+class InsLaugh : public InsSympt
 {
 public:
-    Ins_laugh() :
-        Ins_sympt(Ins_sympt_id::laugh) {}
+    InsLaugh() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::laugh;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::misc;
+    }
 
     bool is_permanent() const override
     {
@@ -221,11 +284,21 @@ protected:
     }
 };
 
-class Ins_phobia_rat : public Ins_sympt
+class InsPhobiaRat : public InsSympt
 {
 public:
-    Ins_phobia_rat() :
-        Ins_sympt(Ins_sympt_id::phobia_rat) {}
+    InsPhobiaRat() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::phobia_rat;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::phobia;
+    }
 
     bool is_permanent() const override
     {
@@ -234,7 +307,9 @@ public:
 
     void on_new_player_turn(const std::vector<Actor*>& seen_foes) override;
 
-    bool allow_gain() const override;
+    void on_permanent_rfear() override;
+
+    bool is_allowed() const override;
 
     std::string char_descr_msg() const override
     {
@@ -273,11 +348,21 @@ protected:
     }
 };
 
-class Ins_phobia_spider : public Ins_sympt
+class InsPhobiaSpider : public InsSympt
 {
 public:
-    Ins_phobia_spider() :
-        Ins_sympt(Ins_sympt_id::phobia_spider) {}
+    InsPhobiaSpider() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::phobia_spider;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::phobia;
+    }
 
     bool is_permanent() const override
     {
@@ -286,7 +371,9 @@ public:
 
     void on_new_player_turn(const std::vector<Actor*>& seen_foes) override;
 
-    bool allow_gain() const override;
+    void on_permanent_rfear() override;
+
+    bool is_allowed() const override;
 
     std::string char_descr_msg() const override
     {
@@ -325,11 +412,21 @@ protected:
     }
 };
 
-class Ins_phobia_reptile_and_amph : public Ins_sympt
+class InsPhobiaReptileAndAmph : public InsSympt
 {
 public:
-    Ins_phobia_reptile_and_amph() :
-        Ins_sympt(Ins_sympt_id::phobia_reptile_and_amph) {}
+    InsPhobiaReptileAndAmph() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::phobia_reptile_and_amph;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::phobia;
+    }
 
     bool is_permanent() const override
     {
@@ -338,7 +435,9 @@ public:
 
     void on_new_player_turn(const std::vector<Actor*>& seen_foes) override;
 
-    bool allow_gain() const override;
+    void on_permanent_rfear() override;
+
+    bool is_allowed() const override;
 
     std::string char_descr_msg() const override
     {
@@ -377,11 +476,21 @@ protected:
     }
 };
 
-class Ins_phobia_canine : public Ins_sympt
+class InsPhobiaCanine : public InsSympt
 {
 public:
-    Ins_phobia_canine() :
-        Ins_sympt(Ins_sympt_id::phobia_canine) {}
+    InsPhobiaCanine() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::phobia_canine;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::phobia;
+    }
 
     bool is_permanent() const override
     {
@@ -390,7 +499,9 @@ public:
 
     void on_new_player_turn(const std::vector<Actor*>& seen_foes) override;
 
-    bool allow_gain() const override;
+    void on_permanent_rfear() override;
+
+    bool is_allowed() const override;
 
     std::string char_descr_msg() const override
     {
@@ -429,11 +540,21 @@ protected:
     }
 };
 
-class Ins_phobia_dead : public Ins_sympt
+class InsPhobiaDead : public InsSympt
 {
 public:
-    Ins_phobia_dead() :
-        Ins_sympt(Ins_sympt_id::phobia_dead) {}
+    InsPhobiaDead() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::phobia_dead;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::phobia;
+    }
 
     bool is_permanent() const override
     {
@@ -442,7 +563,9 @@ public:
 
     void on_new_player_turn(const std::vector<Actor*>& seen_foes) override;
 
-    bool allow_gain() const override;
+    void on_permanent_rfear() override;
+
+    bool is_allowed() const override;
 
     std::string char_descr_msg() const override
     {
@@ -481,11 +604,21 @@ protected:
     }
 };
 
-class Ins_phobia_open : public Ins_sympt
+class InsPhobiaOpen : public InsSympt
 {
 public:
-    Ins_phobia_open() :
-        Ins_sympt(Ins_sympt_id::phobia_open) {}
+    InsPhobiaOpen() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::phobia_open;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::phobia;
+    }
 
     bool is_permanent() const override
     {
@@ -494,7 +627,9 @@ public:
 
     void on_new_player_turn(const std::vector<Actor*>& seen_foes) override;
 
-    bool allow_gain() const override;
+    void on_permanent_rfear() override;
+
+    bool is_allowed() const override;
 
     std::string char_descr_msg() const override
     {
@@ -533,11 +668,21 @@ protected:
     }
 };
 
-class Ins_phobia_confined : public Ins_sympt
+class InsPhobiaConfined : public InsSympt
 {
 public:
-    Ins_phobia_confined() :
-        Ins_sympt(Ins_sympt_id::phobia_confined) {}
+    InsPhobiaConfined() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::phobia_confined;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::phobia;
+    }
 
     bool is_permanent() const override
     {
@@ -546,7 +691,9 @@ public:
 
     void on_new_player_turn(const std::vector<Actor*>& seen_foes) override;
 
-    bool allow_gain() const override;
+    void on_permanent_rfear() override;
+
+    bool is_allowed() const override;
 
     std::string char_descr_msg() const override
     {
@@ -585,11 +732,21 @@ protected:
     }
 };
 
-class Ins_phobia_deep : public Ins_sympt
+class InsPhobiaDeep : public InsSympt
 {
 public:
-    Ins_phobia_deep() :
-        Ins_sympt(Ins_sympt_id::phobia_deep) {}
+    InsPhobiaDeep() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::phobia_deep;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::phobia;
+    }
 
     bool is_permanent() const override
     {
@@ -598,7 +755,9 @@ public:
 
     void on_new_player_turn(const std::vector<Actor*>& seen_foes) override;
 
-    bool allow_gain() const override;
+    void on_permanent_rfear() override;
+
+    bool is_allowed() const override;
 
     std::string char_descr_msg() const override
     {
@@ -637,11 +796,21 @@ protected:
     }
 };
 
-class Ins_phobia_dark : public Ins_sympt
+class InsPhobiaDark : public InsSympt
 {
 public:
-    Ins_phobia_dark() :
-        Ins_sympt(Ins_sympt_id::phobia_dark) {}
+    InsPhobiaDark() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::phobia_dark;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::phobia;
+    }
 
     bool is_permanent() const override
     {
@@ -650,7 +819,9 @@ public:
 
     void on_new_player_turn(const std::vector<Actor*>& seen_foes) override;
 
-    bool allow_gain() const override;
+    void on_permanent_rfear() override;
+
+    bool is_allowed() const override;
 
     std::string char_descr_msg() const override
     {
@@ -689,16 +860,28 @@ protected:
     }
 };
 
-class Ins_masoch : public Ins_sympt
+class InsMasoch : public InsSympt
 {
 public:
-    Ins_masoch() :
-        Ins_sympt(Ins_sympt_id::masoch) {}
+    InsMasoch() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::masoch;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::misc;
+    }
 
     bool is_permanent() const override
     {
         return true;
     }
+
+    bool is_allowed() const override;
 
     std::string char_descr_msg() const override
     {
@@ -739,16 +922,28 @@ protected:
     }
 };
 
-class Ins_sadism : public Ins_sympt
+class InsSadism : public InsSympt
 {
 public:
-    Ins_sadism() :
-        Ins_sympt(Ins_sympt_id::sadism) {}
+    InsSadism() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::sadism;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::misc;
+    }
 
     bool is_permanent() const override
     {
         return true;
     }
+
+    bool is_allowed() const override;
 
     std::string char_descr_msg() const override
     {
@@ -789,11 +984,21 @@ protected:
     }
 };
 
-class Ins_shadows : public Ins_sympt
+class InsShadows : public InsSympt
 {
 public:
-    Ins_shadows() :
-        Ins_sympt(Ins_sympt_id::shadows) {}
+    InsShadows() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::shadows;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::misc;
+    }
 
     bool is_permanent() const override
     {
@@ -819,11 +1024,21 @@ protected:
     }
 };
 
-class Ins_paranoia : public Ins_sympt
+class InsParanoia : public InsSympt
 {
 public:
-    Ins_paranoia() :
-        Ins_sympt(Ins_sympt_id::paranoia) {}
+    InsParanoia() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::paranoia;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::misc;
+    }
 
     bool is_permanent() const override
     {
@@ -849,18 +1064,28 @@ protected:
     }
 };
 
-class Ins_confusion : public Ins_sympt
+class InsConfusion : public InsSympt
 {
 public:
-    Ins_confusion() :
-        Ins_sympt(Ins_sympt_id::confusion) {}
+    InsConfusion() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::confusion;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::misc;
+    }
 
     bool is_permanent() const override
     {
         return false;
     }
 
-    bool allow_gain() const override;
+    bool is_allowed() const override;
 
 protected:
     void on_start_hook() override;
@@ -882,18 +1107,28 @@ protected:
     }
 };
 
-class Ins_frenzy : public Ins_sympt
+class InsFrenzy : public InsSympt
 {
 public:
-    Ins_frenzy() :
-        Ins_sympt(Ins_sympt_id::frenzy) {}
+    InsFrenzy() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::frenzy;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::misc;
+    }
 
     bool is_permanent() const override
     {
         return false;
     }
 
-    bool allow_gain() const override;
+    bool is_allowed() const override;
 
 protected:
     void on_start_hook() override;
@@ -914,11 +1149,21 @@ protected:
     }
 };
 
-class Ins_strange_sensation : public Ins_sympt
+class InsStrangeSensation : public InsSympt
 {
 public:
-    Ins_strange_sensation() :
-        Ins_sympt(Ins_sympt_id::strange_sensation) {}
+    InsStrangeSensation() :
+        InsSympt() {}
+
+    InsSymptId id() const override
+    {
+        return InsSymptId::strange_sensation;
+    }
+
+    InsSymptType type() const override
+    {
+        return InsSymptType::misc;
+    }
 
     bool is_permanent() const override
     {
@@ -951,16 +1196,20 @@ void cleanup();
 void save();
 void load();
 
-void gain_sympt();
+void run_sympt();
 
-bool has_sympt(const Ins_sympt_id id);
+bool has_sympt(const InsSymptId id);
 
-std::vector<const Ins_sympt*> active_sympts();
+bool has_sympt_type(const InsSymptType type);
+
+std::vector<const InsSympt*> active_sympts();
 
 void on_new_player_turn(const std::vector<Actor*>& seen_foes);
 
-void end_sympt(const Ins_sympt_id id);
+void on_permanent_rfear();
+
+void end_sympt(const InsSymptId id);
 
 } //insanity
 
-#endif // INSANITY
+#endif // INSANITY_HPP

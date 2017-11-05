@@ -4,9 +4,8 @@
 
 #include "init.hpp"
 #include "map.hpp"
-#include "map_gen.hpp"
+#include "mapgen.hpp"
 #include "map_parsing.hpp"
-#include "utils.hpp"
 #include "feature_data.hpp"
 #include "feature_trap.hpp"
 #include "game_time.hpp"
@@ -17,17 +16,23 @@ namespace populate_traps
 namespace
 {
 
-Trap* mk_trap(const Trap_id id, const P& pos)
+Trap* mk_trap(const TrapId id, const P& pos)
 {
-    const auto* const   f       = map::cells[pos.x][pos.y].rigid;
-    const auto&         d       = feature_data::data(f->id());
-    const auto* const   mimic   = static_cast<Rigid*>(d.mk_obj(pos));
+    const auto* const f = map::cells[pos.x][pos.y].rigid;
+
+    const auto& d = feature_data::data(f->id());
+
+    auto* const mimic = static_cast<Rigid*>(d.mk_obj(pos));
 
     if (!f->can_have_rigid())
     {
-        TRACE << "Cannot place trap on feature id: " << int(f->id()) << std::endl
-              << "Trap id: " << int(id) << std::endl;
-        assert(false);
+        TRACE << "Cannot place trap on feature id: "
+              << (int)f->id() << std::endl
+              << "Trap id: "
+              << int(id) << std::endl;
+
+        ASSERT(false);
+
         return nullptr;
     }
 
@@ -36,64 +41,72 @@ Trap* mk_trap(const Trap_id id, const P& pos)
     return trap;
 }
 
-} //namespace
+} // namespace
 
 void populate_std_lvl()
 {
     TRACE_FUNC_BEGIN;
 
-    bool blocked[MAP_W][MAP_H];
-    map_parse::run(cell_check::Blocks_move_cmn(false), blocked);
+    bool blocked[map_w][map_h];
 
-    //Put traps in non-plain rooms
+    map_parsers::BlocksMoveCommon(ParseActors::no)
+        .run(blocked);
+
+    const P& player_p = map::player->pos;
+
+    blocked[player_p.x][player_p.y] = true;
+
+    // Put traps in non-plain rooms
     for (Room* const room : map::room_list)
     {
-        const Room_type type = room->type_;
+        const RoomType type = room->type_;
 
-        if (type != Room_type::plain)
+        if (type != RoomType::plain)
         {
             Fraction chance_for_trapped_room(-1, -1);
 
             switch (type)
             {
-            case Room_type::human:
+            case RoomType::human:
                 chance_for_trapped_room.set(1, 3);
                 break;
 
-            case Room_type::ritual:
+            case RoomType::ritual:
                 chance_for_trapped_room.set(1, 4);
                 break;
 
-            case Room_type::spider:
+            case RoomType::spider:
                 chance_for_trapped_room.set(2, 3);
                 break;
 
-            case Room_type::crypt:
+            case RoomType::crypt:
                 chance_for_trapped_room.set(3, 4);
                 break;
 
-            case Room_type::monster:
+            case RoomType::monster:
                 chance_for_trapped_room.set(1, 4);
                 break;
 
-            case Room_type::chasm:
+            case RoomType::chasm:
                 chance_for_trapped_room.set(1, 4);
                 break;
 
-            case Room_type::snake_pit:
-            case Room_type::forest:
-            case Room_type::plain:
-            case Room_type::flooded:
-            case Room_type::muddy:
-            case Room_type::cave:
-            case Room_type::END_OF_STD_ROOMS:
-            case Room_type::river:
-            case Room_type::corr_link:
-            case Room_type::crumble_room:
+            case RoomType::snake_pit:
+            case RoomType::forest:
+            case RoomType::plain:
+            case RoomType::flooded:
+            case RoomType::muddy:
+            case RoomType::cave:
+            case RoomType::jail:
+            case RoomType::END_OF_STD_ROOMS:
+            case RoomType::river:
+            case RoomType::corr_link:
+            case RoomType::crumble_room:
                 break;
             }
 
-            if (chance_for_trapped_room.numerator != -1 && chance_for_trapped_room.roll())
+            if (chance_for_trapped_room.num != -1 &&
+                chance_for_trapped_room.roll())
             {
                 TRACE_VERBOSE << "Trapping non-plain room" << std::endl;
 
@@ -106,104 +119,117 @@ void populate_std_lvl()
                 {
                     for (int x = p0.x; x <= p1.x; ++x)
                     {
-                        if (!blocked[x][y] && map::cells[x][y].rigid->can_have_rigid())
+                        if (!blocked[x][y] &&
+                            map::cells[x][y].rigid->can_have_rigid())
                         {
                             trap_pos_bucket.push_back(P(x, y));
                         }
                     }
                 }
 
-                const bool  IS_SPIDER_ROOM  = type == Room_type::spider;
+                const bool is_spider_room = (type == RoomType::spider);
 
-                const int   NR_BASE_TRAPS   = std::min(int(trap_pos_bucket.size()) / 2,
-                                                       (IS_SPIDER_ROOM ? 3 : 1));
+                const int nr_origin_traps =
+                    std::min((int)trap_pos_bucket.size() / 2,
+                             (is_spider_room ? 3 : 1));
 
-                for (int i = 0; i < NR_BASE_TRAPS; ++i)
+                for (int i = 0; i < nr_origin_traps; ++i)
                 {
                     if (trap_pos_bucket.empty())
                     {
                         break;
                     }
 
-                    const Trap_id trap_type = IS_SPIDER_ROOM ?
-                                              Trap_id::web :
-                                              Trap_id::any;
+                    const TrapId trap_type =
+                        is_spider_room ?
+                        TrapId::web :
+                        TrapId::any;
 
-                    const int ELEMENT   = rnd::range(0, trap_pos_bucket.size() - 1);
-                    const P pos       = trap_pos_bucket[ELEMENT];
+                    const int idx = rnd::range(0, trap_pos_bucket.size() - 1);
+
+                    const P pos = trap_pos_bucket[idx];
 
                     blocked[pos.x][pos.y] = true;
 
-                    trap_pos_bucket.erase(trap_pos_bucket.begin() + ELEMENT);
+                    trap_pos_bucket.erase(trap_pos_bucket.begin() + idx);
 
                     TRACE_VERBOSE << "Placing base trap" << std::endl;
-                    Trap* const base_trap = mk_trap(trap_type, pos);
+                    Trap* const origin_trap = mk_trap(trap_type, pos);
 
-                    if (base_trap->valid())
+                    if (origin_trap->valid())
                     {
-                        map::put(base_trap);
+                        map::put(origin_trap);
 
-                        //Spawn up to N traps in nearest cells (not necessarily adjacent)
-                        Is_closer_to_pos sorter(pos);
+                        // Spawn up to n traps in nearest cells (not necessarily
+                        // adjacent)
+                        IsCloserToPos sorter(pos);
 
-                        std::sort(trap_pos_bucket.begin(), trap_pos_bucket.end(), sorter);
+                        std::sort(trap_pos_bucket.begin(),
+                                  trap_pos_bucket.end(),
+                                  sorter);
 
-                        //NOTE: Trap type may have been randomized by the trap.
-                        //We retrieve the actual trap resulting id here:
-                        const Trap_id base_trap_type = base_trap->trap_type();
+                        // NOTE: Trap type may have been randomized by the trap.
+                        //       We retrieve the actual trap resulting id here:
+                        const TrapId origin_trap_type = origin_trap->type();
 
-                        const int NR_ADJ = base_trap_type == Trap_id::web ? 0 :
-                                           std::min(rnd::range(0, 2), int(trap_pos_bucket.size()));
+                        const int nr_adj =
+                            (origin_trap_type == TrapId::web) ?
+                            0 :
+                            std::min(rnd::range(0, 2),
+                                     (int)trap_pos_bucket.size());
 
                         TRACE_VERBOSE << "Placing adjacent traps" << std::endl;
 
-                        for (int i_adj = 0; i_adj < NR_ADJ; ++i_adj)
+                        for (int i_adj = 0; i_adj < nr_adj; ++i_adj)
                         {
-                            //Make additional traps with the same id as the original trap
+                            // Make additional traps with the same id as the
+                            // original trap
                             const P adj_pos = trap_pos_bucket.front();
 
                             blocked[adj_pos.x][adj_pos.y] = true;
 
                             trap_pos_bucket.erase(trap_pos_bucket.begin());
 
-                            Trap* trap = mk_trap(base_trap_type, adj_pos);
+                            Trap* extra_trap =
+                                mk_trap(origin_trap_type, adj_pos);
 
-                            if (trap->valid())
+                            if (extra_trap->valid())
                             {
-                                map::put(trap);
+                                map::put(extra_trap);
                             }
-                            else //Adjacent trap invalid
+                            else // Extra trap invalid
                             {
-                                delete trap;
+                                delete extra_trap;
                             }
                         }
                     }
-                    else //Trap invalid
+                    else // Origin trap invalid
                     {
-                        delete base_trap;
+                        delete origin_trap;
                     }
                 }
             }
         }
-    }
+    } // room loop
 
-    const int CHANCE_ALLOW_TRAPPED_PLAIN_AREAS = std::min(85, 10 + ((map::dlvl - 1) * 8));
+    const int chance_trap_plain_areas =
+        std::min(85,
+                 10 + ((map::dlvl - 1) * 8));
 
-    if (rnd::percent(CHANCE_ALLOW_TRAPPED_PLAIN_AREAS))
+    if (rnd::percent(chance_trap_plain_areas))
     {
-        TRACE_VERBOSE << "Trapping plain room" << std::endl;
+        TRACE_VERBOSE << "Trapping plain rooms" << std::endl;
 
         std::vector<P> trap_pos_bucket;
 
-        for (int x = 1; x < MAP_W - 1; ++x)
+        for (int x = 1; x < map_w - 1; ++x)
         {
-            for (int y = 1; y < MAP_H - 1; ++y)
+            for (int y = 1; y < map_h - 1; ++y)
             {
                 if (map::room_map[x][y])
                 {
-                    if (
-                        !blocked[x][y]                                  &&
-                        map::room_map[x][y]->type_ == Room_type::plain  &&
+                    if (!blocked[x][y] &&
+                        map::room_map[x][y]->type_ == RoomType::plain &&
                         map::cells[x][y].rigid->can_have_rigid())
                     {
                         trap_pos_bucket.push_back(P(x, y));
@@ -212,69 +238,78 @@ void populate_std_lvl()
             }
         }
 
-        const int NR_BASE_TRAPS = std::min(int(trap_pos_bucket.size()) / 2, rnd::range(1, 3));
+        const int nr_origin_traps =
+            std::min((int)trap_pos_bucket.size() / 2,
+                     rnd::range(1, 3));
 
-        for (int i = 0; i < NR_BASE_TRAPS; ++i)
+        for (int i = 0; i < nr_origin_traps; ++i)
         {
             if (trap_pos_bucket.empty())
             {
                 break;
             }
 
-            const int ELEMENT = rnd::range(0, trap_pos_bucket.size() - 1);
+            const int element = rnd::range(0, trap_pos_bucket.size() - 1);
 
-            const P pos = trap_pos_bucket[ELEMENT];
+            const P pos = trap_pos_bucket[element];
 
             TRACE_VERBOSE << "Placing base trap" << std::endl;
 
-            trap_pos_bucket.erase(trap_pos_bucket.begin() + ELEMENT);
+            trap_pos_bucket.erase(trap_pos_bucket.begin() + element);
 
             blocked[pos.x][pos.y] = true;
 
-            Trap* const base_trap = mk_trap(Trap_id::any, pos);
+            Trap* const origin_trap = mk_trap(TrapId::any, pos);
 
-            if (base_trap->valid())
+            if (origin_trap->valid())
             {
-                map::put(base_trap);
+                map::put(origin_trap);
 
-                //Spawn up to N traps in nearest cells (not necessarily adjacent)
-                Is_closer_to_pos sorter(pos);
+                // Spawn up to n traps in nearest cells (not necessarily
+                // adjacent)
+                IsCloserToPos sorter(pos);
 
-                std::sort(trap_pos_bucket.begin(), trap_pos_bucket.end(), sorter);
+                std::sort(trap_pos_bucket.begin(),
+                          trap_pos_bucket.end(),
+                          sorter);
 
-                //NOTE: Trap type may have been randomized by the trap.
-                //We retrieve the actual trap resulting id here:
-                const Trap_id base_trap_type = base_trap->trap_type();
+                // NOTE: Trap type may have been randomized by the trap. We
+                //       retrieve the actual trap resulting id here:
+                const TrapId origin_trap_type = origin_trap->type();
 
-                const int NR_ADJ = base_trap_type == Trap_id::web ? 0 :
-                                   std::min(rnd::range(0, 2), int(trap_pos_bucket.size()));
+                const int nr_adj =
+                    (origin_trap_type == TrapId::web) ?
+                    0 :
+                    std::min(rnd::range(0, 2),
+                             (int)trap_pos_bucket.size());
 
                 TRACE_VERBOSE << "Placing adjacent traps" << std::endl;
 
-                for (int i_adj = 0; i_adj < NR_ADJ; ++i_adj)
+                for (int i_adj = 0; i_adj < nr_adj; ++i_adj)
                 {
-                    //Make additional traps with the same id as the original trap
+                    // Make additional traps with the same id as the original
+                    // trap
                     const P adj_pos = trap_pos_bucket.front();
 
                     blocked[adj_pos.x][adj_pos.y] = true;
 
                     trap_pos_bucket.erase(trap_pos_bucket.begin());
 
-                    Trap* trap = mk_trap(base_trap_type, adj_pos);
+                    Trap* extra_trap = mk_trap(origin_trap_type, adj_pos);
 
-                    if (trap->valid())
+                    if (extra_trap->valid())
                     {
-                        map::put(trap);
+                        map::put(extra_trap);
                     }
-                    else //Trap invalid
+                    else // Extra trap invalid
                     {
-                        delete trap;
+                        delete extra_trap;
                     }
                 }
             }
-            else //Trap invalid
+            else // Origin trap invalid
             {
-                delete base_trap;
+                delete origin_trap;
             }
         }
     }
@@ -282,4 +317,4 @@ void populate_std_lvl()
     TRACE_FUNC_END;
 }
 
-} //Populate_traps
+} // populate_traps

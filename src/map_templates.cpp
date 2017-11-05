@@ -1,369 +1,526 @@
 #include "map_templates.hpp"
 
-#include "init.hpp"
-#include "game_time.hpp"
+#include "rl_utils.hpp"
+#include "saving.hpp"
 
-#include <vector>
-#include <cassert>
+#include <fstream>
+#include <map>
 
-namespace map_templ_handling
+namespace map_templates
 {
 
 namespace
 {
 
-Map_templ templates_[size_t(Map_templ_id::END)];
+Array2<char> level_templates_[(size_t)LevelTemplId::END];
 
-Map_templ_cell ch_to_cell(const char CH,
-                          const std::vector<Map_templ_cell>& prototypes)
+std::vector<RoomTempl> room_templates_;
+
+std::vector<RoomTemplStatus> room_templ_status_;
+
+// Space and tab
+const std::string whitespace_chars = " \t";
+
+const char comment_symbol = '\'';
+
+
+// Checks if this line has non-whitespace characters, and is not commented out
+bool line_has_content(const std::string& line)
 {
-    for (const Map_templ_cell& proto : prototypes)
+    const size_t first_non_space =
+        line.find_first_not_of(whitespace_chars);
+
+    return
+        (first_non_space != std::string::npos) &&
+        (line[first_non_space] != comment_symbol);
+}
+
+void trim_trailing_whitespace(std::string& line)
+{
+    const size_t end_pos =
+        line.find_last_not_of(whitespace_chars);
+
+    line = line.substr(0, end_pos + 1);
+}
+
+size_t max_length(const std::vector<std::string>& lines)
+{
+    size_t max_len = 0;
+
+    std::for_each(begin(lines),
+                  end(lines),
+                  [&max_len](const std::string& buffer_line)
     {
-        if (proto.ch == CH)
+        if (buffer_line.size() > max_len)
         {
-            return proto;
+            max_len = buffer_line.size();
         }
+    });
+
+    return max_len;
+}
+
+void load_level_templates()
+{
+    TRACE_FUNC_BEGIN;
+
+    std::ifstream ifs("res/data/map/levels.txt");
+
+    ASSERT(!ifs.fail());
+    ASSERT(ifs.is_open());
+
+    std::map<std::string, LevelTemplId> name_2_level_id;
+
+    name_2_level_id["Intro forest"] = LevelTemplId::intro_forest;
+    name_2_level_id["Egypt"] = LevelTemplId::egypt;
+    name_2_level_id["Leng"] = LevelTemplId::leng;
+    name_2_level_id["Rat cave"] = LevelTemplId::rat_cave;
+    name_2_level_id["Boss level"] = LevelTemplId::boss_level;
+    name_2_level_id["Trapezohedron level"] = LevelTemplId::trapez_level;
+
+    const char name_symbol = '$';
+
+    LevelTemplId current_id = LevelTemplId::END;
+
+    std::vector<std::string> template_buffer;
+
+    std::vector<std::string> lines_read;
+
+    for (std::string line; std::getline(ifs, line); /* No increment */)
+    {
+        lines_read.push_back(line);
     }
 
-    TRACE << "Failed to make map template cell from char: " <<  CH << std::endl;
-    assert(false);
-    return Map_templ_cell(0);
-}
-
-void mk_templ(const std::string& str,
-              const Map_templ_id id,
-              const std::vector<Map_templ_cell>& prototypes)
-{
-    Map_templ& templ = templates_[size_t(id)];
-
-    std::vector<Map_templ_cell> inner;
-
-    for (const auto ch : str)
+    for (size_t line_idx = 0; line_idx < lines_read.size(); ++line_idx)
     {
-        switch (ch)
-        {
-        case ';':
-        {
-            //Delimiting character (";") found, inner vector is pushed to outer
-            templ.add_row(inner);
-            inner.clear();
-        }
-        break;
+        std::string& line = lines_read[line_idx];
 
-        case ' ':
-        {
-            inner.push_back(Map_templ_cell(0));
-        }
-        break;
+        bool try_finalize = false;
 
-        default:
+        if (line.empty())
         {
-            Map_templ_cell templ_cell = ch_to_cell(ch, prototypes);
+            try_finalize = true;
+        }
 
-            inner.push_back(templ_cell);
+        if (!try_finalize)
+        {
+            if (!line_has_content(line))
+            {
+                try_finalize = true;
+            }
         }
-        break;
+
+        if (!try_finalize)
+        {
+            trim_trailing_whitespace(line);
+
+            // Is this line a template name?
+            if (line[0] == name_symbol)
+            {
+                const size_t name_pos = 2;
+
+                const std::string name_str =
+                    line.substr(name_pos, line.size() - name_pos);
+
+                auto id_it = name_2_level_id.find(name_str);
+
+                if (id_it == name_2_level_id.end())
+                {
+                    TRACE << "Unrecognized level template name: "
+                          << name_str << std::endl;
+
+                    ASSERT(false);
+                }
+
+                current_id = id_it->second;
+            }
+            else // Not a name line
+            {
+                // This must be a template line
+                template_buffer.push_back(line);
+            }
         }
+
+        // Is this the last line? Then we should try finalizing the template
+        if (line_idx == (lines_read.size() - 1))
+        {
+            try_finalize = true;
+        }
+
+        // Is the current template done?
+        if (try_finalize &&
+            current_id != LevelTemplId::END &&
+            !template_buffer.empty())
+        {
+            ASSERT(template_buffer.size() == map_h);
+
+            // Not all lines in a template needs to be the same length, so we
+            // to find the length of the longest line
+            const size_t max_len = max_length(template_buffer);
+
+            ASSERT(max_len == map_w);
+
+            auto& templ = level_templates_[(size_t)current_id];
+
+            templ.resize(max_len, template_buffer.size());
+
+            for (size_t buffer_idx = 0;
+                 buffer_idx < template_buffer.size();
+                 ++buffer_idx)
+            {
+                std::string& buffer_line = template_buffer[buffer_idx];
+
+                // Pad the buffer line with space characters
+                buffer_line.append(max_len - buffer_line.size(), ' ');
+
+                // Fill the template araray with the buffer characters
+                for (size_t line_idx = 0;
+                     line_idx < max_len;
+                     ++line_idx)
+                {
+                    templ(line_idx, buffer_idx) = buffer_line[line_idx];
+                }
+            }
+
+            current_id = LevelTemplId::END;
+
+            template_buffer.clear();
+        }
+
+    } // for
+
+    TRACE_FUNC_END;
+
+} // load_level_templates
+
+
+//
+// Add all combinations of rotating and flipping the template
+//
+void mk_room_templ_variants(RoomTempl& templ)
+{
+    auto& symbols = templ.symbols;
+
+    //
+    // "Up"
+    //
+    room_templates_.push_back(templ);
+
+    symbols.flip_hor();
+
+    room_templates_.push_back(templ);
+
+    //
+    // "Right"
+    //
+    symbols.rotate_cw();
+
+    room_templates_.push_back(templ);
+
+    symbols.flip_ver();
+
+    room_templates_.push_back(templ);
+
+    //
+    // "Down"
+    //
+    symbols.rotate_cw();
+
+    room_templates_.push_back(templ);
+
+    symbols.flip_hor();
+
+    room_templates_.push_back(templ);
+
+    //
+    // "Left"
+    //
+    symbols.rotate_cw();
+
+    room_templates_.push_back(templ);
+
+    symbols.flip_ver();
+
+    room_templates_.push_back(templ);
+
+} // mk_room_templ_variants
+
+
+void load_room_templates()
+{
+    TRACE_FUNC_BEGIN;
+
+    room_templates_.clear();
+
+    room_templ_status_.clear();
+
+    std::map<std::string, RoomType> name_2_room_type;
+
+    name_2_room_type["plain"] = RoomType::plain;
+    name_2_room_type["human"] = RoomType::human;
+    name_2_room_type["ritual"] = RoomType::ritual;
+    name_2_room_type["jail"] = RoomType::jail;
+    name_2_room_type["spider"] = RoomType::spider;
+    name_2_room_type["snake_pit"] = RoomType::snake_pit;
+    name_2_room_type["crypt"] = RoomType::crypt;
+    name_2_room_type["monster"] = RoomType::monster;
+    name_2_room_type["flooded"] = RoomType::flooded;
+    name_2_room_type["muddy"] = RoomType::muddy;
+    name_2_room_type["cave"] = RoomType::cave;
+    name_2_room_type["chasm"] = RoomType::chasm;
+    name_2_room_type["forest"] = RoomType::forest;
+
+    std::ifstream ifs("res/data/map/rooms.txt");
+
+    ASSERT(!ifs.fail());
+    ASSERT(ifs.is_open());
+
+    std::vector<std::string> template_buffer;
+
+    std::vector<std::string> lines_read;
+
+    for (std::string line; std::getline(ifs, line); /* No increment */)
+    {
+        lines_read.push_back(line);
     }
+
+    const char type_symbol = '$';
+
+    RoomTempl templ;
+
+    size_t current_base_templ_idx = 0;
+
+    for (size_t line_idx = 0; line_idx < lines_read.size(); ++line_idx)
+    {
+        std::string& line = lines_read[line_idx];
+
+        bool try_finalize = false;
+
+        if (line.empty())
+        {
+            try_finalize = true;
+        }
+
+        if (!try_finalize)
+        {
+            if (!line_has_content(line))
+            {
+                try_finalize = true;
+            }
+        }
+
+        if (!try_finalize)
+        {
+            trim_trailing_whitespace(line);
+
+            // Is this line a room type?
+            if (line[0] == type_symbol)
+            {
+                const size_t type_pos = 2;
+
+                const std::string type_str =
+                    line.substr(type_pos, line.size() - type_pos);
+
+                auto type_it = name_2_room_type.find(type_str);
+
+                if (type_it == name_2_room_type.end())
+                {
+                    TRACE << "Unrecognized room template type: "
+                          << type_str << std::endl;
+
+                    ASSERT(false);
+                }
+
+                templ.type = type_it->second;
+            }
+            else // Not a name line
+            {
+                template_buffer.push_back(line);
+            }
+        }
+
+        // Is this the last line? Then we should try finalizing the template
+        if (line_idx == (lines_read.size() - 1))
+        {
+            try_finalize = true;
+        }
+
+        // Is the current template done?
+        if (try_finalize &&
+            !template_buffer.empty())
+        {
+            // Not all lines in a template needs to be the same length, so we
+            // have to find the length of the longest line
+            const size_t max_len = max_length(template_buffer);
+
+            templ.symbols.resize(max_len, template_buffer.size());
+
+            for (size_t buffer_idx = 0;
+                 buffer_idx < template_buffer.size();
+                 ++buffer_idx)
+            {
+                std::string& buffer_line = template_buffer[buffer_idx];
+
+                // Pad the buffer line with space characters
+                buffer_line.append(max_len - buffer_line.size(), ' ');
+
+                // Fill the template araray with the buffer characters
+                for (size_t line_idx = 0;
+                     line_idx < max_len;
+                     ++line_idx)
+                {
+                    templ.symbols(line_idx, buffer_idx) = buffer_line[line_idx];
+                }
+            }
+
+            templ.base_templ_idx = current_base_templ_idx;
+
+            mk_room_templ_variants(templ);
+
+            template_buffer.clear();
+
+            ++current_base_templ_idx;
+        }
+
+    } // for
+
+    room_templ_status_.resize(current_base_templ_idx, RoomTemplStatus::unused);
+
+    TRACE << "Number of room templates loaded from template file: "
+          << current_base_templ_idx
+          << std::endl
+          << "Total variants: " << room_templates_.size()
+          << std::endl;
+
+    TRACE_FUNC_END;
 }
 
-void init_templs()
-{
-    //Blank level with correct dimensions to copy/paste when making new templates
-//  "################################################################################;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "#..............................................................................#;"
-//  "################################################################################;";
-
-    //Filled version
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;"
-//  "################################################################################;";
-
-    //----------------------------------------------------------------- FOREST
-    std::string str =
-        "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt;"
-        "tttttttttttttttttt,,,,,,,,,,tttttttt~~~~~~~~tttttttttt,,,tt,t,,t,,ttt,,ttttttttt;"
-        "tttt,=,,,,ttttttt,,,,,t,,,,tttt~,~,~~~,,,~~~~,,~~ttttttt,,,,,,________,,,ttttttt;"
-        "ttt,,,@,,,,,tttttt,,,,,,,,,,,,,,~,~~~,,t,,~,~~,,,,,,,,,,,,,,___________,,,,,,ttt;"
-        "ttt,,,,=,,,,,tttttttt,,,,,,,,,,,,~~,~~,,,~~,~,,,,,,,,,,,,,_____######____,,ttttt;"
-        "tt,,,,,,=,,,,tttttttttttt,,,,,,,,,~,~~,~~~,~,,,,,______________#....#_____,,,,tt;"
-        "tt,,,,,,,=,t,tt,ttt,tttt,,,,,,,,,,,,,,,,,,,,,,,,_____________###....###____,,,tt;"
-        "tttt,t,,,,=,,,,,,,,,t,,,,,,,,,,,,,,,,,,,,,,,,,,,__#####_#__#_#.#....#.#______,,t;"
-        "tttttttt,,,========,,,,t,t,,,,,,,,,,,,,,,,,,t,,,__#...########.#....#.######_,tt;"
-        "ttttttttt,,,,,,,,,,===,,tt,,,,,,,,,,,,,,,t,,,,,,__#...#...................##_,,t;"
-        "ttttt,,ttttt,tt,tt,,,,=,,tt,,,,,,,,,tt,,,,,,&,&___#.#.#..[.[.[.[...[.[....>#_,tt;"
-        "tt,,,,,,,,tttttttttt,,,=,,t,,tttt,,t,,,,,,,=======+...+*****************-..#_,tt;"
-        "tttt,,,,,,,,,t,,,tttt,,&=,,,,,,ttt,ttt,,,,=,t,,___#.#.#..[.[.[.[...[.[.....#_,,t;"
-        "ttttt,,,,,t,,,,,,,,,,,,,,=&,,,ttttttt,,,,=&,t,,,__#...#...................##_,tt;"
-        "ttttt,,,,,,,t,,t,,,,,t,,,,=&,,,,tttttt,&=,,t,t,,__#...########.#....#.######_,tt;"
-        "tttttt,,,t,,,,,,,,,,,,t,,,,=,t,ttt,tt,,=,,,tt,,,__#####_#__#_#,#....#.#_____,,,t;"
-        "tttttt,,,,,,,,,tttt,,,,,,,,,===========,,,,ttt,,_____________###....###____,,ttt;"
-        "tttttt,,,t,,,tttttt,,,,ttt,ttt,,t,t,,ttt,,,,t,,,,______________#....#_____,,,ttt;"
-        "ttttttt,,,,,,,ttt,,,,,,,,tttt,,,,tt,t,,,,,,,,,,,,,,,,,,,,______######____,,,tttt;"
-        "ttttttt,ttt,tttt,,,,,,,,,,,tttt,,,,tt,,,,tt,,t,,,,,,,,,,,,,,___________,,,t,,,tt;"
-        "ttttttttttttttttt,,,t,,,ttttttttt,,,,,,,,,ttttt,,,,ttt,,t,,,,,,,,,,,,,,,tttttttt;"
-        "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt;";
-
-    mk_templ(str, Map_templ_id::intro_forest, std::vector<Map_templ_cell>
-    {
-        {'@', Feature_id::floor},           //Start pos + stone path
-        {'.', Feature_id::floor},           //Stone floor with some grass/shrubs
-        {'#', Feature_id::wall},            //Stone wall with some low/high rubble
-        {',', Feature_id::grass},           //Random grass and bushes
-        {'&', Feature_id::grass},           //Graves, or random grass and bushes
-        {'_', Feature_id::grass},           //Withered grass
-        {'=', Feature_id::floor},           //Stone path
-        {'~', Feature_id::liquid_shallow},  //Shallow water
-        {'t', Feature_id::tree},
-        {'v', Feature_id::brazier},
-        {'[', Feature_id::church_bench},
-        {'-', Feature_id::altar},
-        {'*', Feature_id::carpet},
-        {'>', Feature_id::stairs},
-        {'+', Feature_id::floor}            //Doors
-    });
-
-    //----------------------------------------------------------------- EGYPT
-    str =
-        "################################################################################;"
-        "###...################################........................##################;"
-        "###.1.###############################..######################..#################;"
-        "###...##############################..#########################.################;"
-        "####.##############################..####v....################|....|############;"
-        "####.#############################..####..###v..##############......############;"
-        "####.##########################.....####..######.v############|....|############;"
-        "#####.####.#.#.#.#.###########..######v..#######..###############.##############;"
-        "######.##|C........|#########.#######..##########..############..###############;"
-        "#######.#...........##.....##.#####...############v.##########..################;"
-        "########....M...C....#.#.#.#..####..###...#########..########..#################;"
-        "#########..P.....C.#..........####.####.@...........v#######..##################;"
-        "########....M...C....#.#.#.#..##|..|###...#################.v###################;"
-        "#######.#...........##.....##.##....######################...###################;"
-        "######.##|C........|#########.##|..|########......#######.v##.##################;"
-        "#####.####.#.#.#.#.##########.####.########..###v..#####..####.#################;"
-        "####.########################.####...#####..#####v..###..######.################;"
-        "####.########################..#####..###..#######v.....########.###############;"
-        "###...########################...####.....#############.#########.###|...|######;"
-        "###.2.##########################...##################v..##########........######;"
-        "###...############################v....................##############|...|######;"
-        "################################################################################;";
-
-    mk_templ(str, Map_templ_id::egypt, std::vector<Map_templ_cell>
-    {
-        {'@', Feature_id::floor},
-        {'.', Feature_id::floor},
-        {'#', Feature_id::wall},
-        {'v', Feature_id::brazier},
-        {'|', Feature_id::pillar},
-        {'S', Feature_id::statue},
-        {'P', Feature_id::floor, Actor_id::khephren},
-        {'M', Feature_id::floor, Actor_id::mummy},
-        {'C', Feature_id::floor, Actor_id::croc_head_mummy},
-        {'1', Feature_id::floor},   //Stair candidate #1
-        {'2', Feature_id::floor}    //Stair candidate #2
-    });
-
-    //----------------------------------------------------------------- LENG
-    str =
-        "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%##################################;"
-        "%%%%%%%%%%-%%--%--%%--%%%--%%--%%-%-%%%--%-%%-#.....#.....#.....#..............#;"
-        "%@----%--------%---%---%--------%----%-----%--#.....#.....#.....#..............#;"
-        "%%--------------------------------------------###.#####.#####.###..............#;"
-        "%-------------%--------------------------%----#.................#..............#;"
-        "%%------------%-------------------------------#...###.#####.###................#;"
-        "%%---------------------%%%--------------%-----#...#.....#.....##################;"
-        "%%%----%%---------------S%--------------------#...#.....#.....##################;"
-        "%%%------------------%%-S%S------%------------#...################............##;"
-        "%%%%-----------------%--%%-%----%%------------#......#...#......##.....$......##;"
-        "%%%--------------------%%S--------------------##.###.#...#......###.$.....$...##;"
-        "%%------------------%-%%S---------------------+......#...######...1.........E.##;"
-        "%%%-------------------S%%S-%------------------##.###.#...#......###.$.....$...##;"
-        "%%-------------------%-S%%-%----%-------------#...#..###.#.#######.....$......##;"
-        "%%---------------------S%%S-------------------#...#......#......##............##;"
-        "%%%------------------%-%%---------------%-----#.###############.#############2##;"
-        "%%-----%---------------------------%----------#.#...............#############.##;"
-        "%%%---------%---------------------------------#.#.###.###.###.#.####....#####..#;"
-        "%%--%-----------------------------------------#.#.###.###.###.#.##...##...####.#;"
-        "%%%--------------%----------------%---%-----%-#.#.###.###.###.#.#..######....#.#;"
-        "%%%%%%--%---%--%%%-%--%%%%%%%-%-%%%--%%--%-%%%#...............#...##########...#;"
-        "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%##################################;";
-
-    mk_templ(str, Map_templ_id::leng, std::vector<Map_templ_cell>
-    {
-        {'@', Feature_id::floor},
-        {'%', Feature_id::wall},
-        {'.', Feature_id::floor},
-        {'#', Feature_id::wall},
-        {'E', Feature_id::floor, Actor_id::leng_elder},
-        {'1', Feature_id::floor},
-        {'2', Feature_id::wall},
-        {'$', Feature_id::altar},
-        {'-', Feature_id::grass},
-        {'+', Feature_id::floor}, //Door
-        {'S', Feature_id::grass, Actor_id::leng_spider}
-    });
-
-    //----------------------------------------------------------------- RATS IN THE WALLS
-    str =
-        "################################################################################;"
-        "##@#################,##,##xxxxxxxxx###xxxxxxxxxxx######rr#,##########,#,########;"
-        "##.##############,,,,,,,,,x,,,,,,,xrrrxrr,rrr,rrxr,rrrr,,,,,,##,,#,,,,,,,#######;"
-        "##...&##########,,,,xxxxxxx,,,,,,,xr,rxr,,,,,,,rxrrr,,,,,:,,,,,,,,,,,:,,,,######;"
-        "###..:#########,,:,,x,,,,,,,,,,,,,,,,rrrrxx,xxrrxr,r,,,,,,,,,,,,,,,,,,,,,,,,,###;"
-        "###:...#######,,,,,,xx,xxxx,,,,,,,xrrrxrrx,,,xrrxrrr,,,,,,,,:,,,,,,:,,,,,,######;"
-        "##&..:..#####,,,,,,,,,,,,,xxxx,xxxx,r,xxxx,,,x,xx,,,,,,,,,,,,,,,,,,,,,,,,,######;"
-        "####.&.:####,,,,,,,,,,,,,,,:,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,:,,,,,####;"
-        "####..##&:1.,,,,,,,,,:,,,,,,,,,,:,,,,,,,,,,,|,,,:,,,xxx,xx,xxx,,,,,,,,,,,,,#####;"
-        "#####..&:.#,,,,,,,,,,,,,,,x,x,x,x,x,x,,,,|,,,,,|,,,rx,,,,,,,,x,,,,:,,,,,,,######;"
-        "###########,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,x,rrrrr,,x,,,,,,,,,,,#######;"
-        "###########,,,,,,,,|,,,,,,,,,,,,,,,,:,,,|,,,,,,,|,,rr,,,,,r,,,,,,,#,,,,,########;"
-        "###########,,,,,|,,,,,|,,,,,,,,,,,,,,,,,,,,,,,,,,,,,x,r,rr,,,x,,####,,,,,#######;"
-        "###########,,,,,,,,,,,,,,,x,x,x,x,x,x,,,,|,,,,,|,,,rx,,rrr,,,x,,,,##############;"
-        "############,,,|,,,,,,,|,,,,,,,,,,,,,,,,,,,,|,,,,,x,x,r,,r,,,x,,,###############;"
-        "############,,,,,,,,,,,,,,,,,,,,:,,,,,,,,,,,,,,,,,rr,,,rr,,,,x,:##xxxxxx########;"
-        "#############,,,|,,,,,|,,,xxx,xxxxx,xxx,,,:,,,,r,,,rx,rr,,,,,x,,,,x....x########;"
-        "##############,,,,,|,,,,,,x,,,,,xrrrrrx,,,,,,,,,,,r,x,r,,,,,rx,,,,...>.x########;"
-        "#################,,,,,,:,,x,,,,,xrr,,rxrr,rr,rr,r,,,xxxxxxxxxx,:,,x....x########;"
-        "################:,,,,,,,,,x,,,,,xrrrrrxrrrr##rrr,r,,rr,rr,rr,r,##:xxxxxx########;"
-        "###################:,,####xxxxxxxxxxxxx##r#####rr###r###r#rrr###################;"
-        "################################################################################;";
-
-    mk_templ(str, Map_templ_id::rats_in_the_walls, std::vector<Map_templ_cell>
-    {
-        {'@', Feature_id::floor},
-        {'.', Feature_id::floor},
-        {'#', Feature_id::wall},
-        {'x', Feature_id::wall},                    //Constructed walls
-        {'&', Feature_id::bones},
-        {'1', Feature_id::floor},                   //Discovery event
-        {',', Feature_id::floor},                   //Random bones
-        {'r', Feature_id::floor, Actor_id::rat},    //Random bones + rat
-        {'>', Feature_id::stairs},
-        {'|', Feature_id::monolith},
-        {':', Feature_id::stalagmite}
-    });
-
-    //----------------------------------------------------------------- BOSS LEVEL
-    str =
-        "################################################################################;"
-        "############################...................................................#;"
-        "############################...................................................#;"
-        "############################...#.....#...#.....#...#.....#...#.....#...........#;"
-        "############################...###.###...###.###...###.###...###.###...........#;"
-        "##############....#########......###.......###.......###.......###.............#;"
-        "##############....#########....###.###...###.###...###.###...###.###...........#;"
-        "############.#....#.#######....#.....#...#.....#...#.....#...#.....#...........#;"
-        "#...########.#....#.#######.................................................####;"
-        "#...#...................#.#.......|....|....|....|....|....|....|...|...|...####;"
-        "#.#.#.............................................................v...v...v..###;"
-        "#@...............................................................M...........###;"
-        "#.#.#.............................................................v...v...v..###;"
-        "#...#...................#.#.......|....|....|....|....|....|....|...|...|...####;"
-        "#...########.#....#.#######.................................................####;"
-        "############.#....#.#######....#.....#...#.....#...#.....#...#.....#...........#;"
-        "##############....#########....###.###...###.###...###.###...###.###...........#;"
-        "##############....#########......###.......###.......###.......###.............#;"
-        "############################...###.###...###.###...###.###...###.###...........#;"
-        "############################...#.....#...#.....#...##...##...#.....#...........#;"
-        "############################...................................................#;"
-        "################################################################################;";
-
-    mk_templ(str, Map_templ_id::boss_level, std::vector<Map_templ_cell>
-    {
-        {'@', Feature_id::floor},
-        {'.', Feature_id::floor},
-        {'#', Feature_id::wall},
-        {'M', Feature_id::floor, Actor_id::the_high_priest},
-        {'|', Feature_id::pillar},
-        {'v', Feature_id::brazier},
-        {'>', Feature_id::stairs}
-    });
-
-    //----------------------------------------------------------------- BOSS LEVEL
-    str =
-        "################################################################################;"
-        "#####################################...|...####################################;"
-        "#####################################.|...|.####################################;"
-        "#####################################...|...####################################;"
-        "####################################..|...|..###################################;"
-        "###################################.....|.....##################################;"
-        "##################################....|...|....#################################;"
-        "#################################...#.......#...################################;"
-        "#######.......................##..#.#.##.##.#.#..##.......######################;"
-        "#######.|.|.|.|.|.|.|.|.|.|.|.#v..|.v.|...|.v.|..v#.|.|.|.######################;"
-        "#######..@..............................o.................######################;"
-        "#######.|.|.|.|.|.|.|.|.|.|.|.#v..|.v.|...|.v.|..v#.|.|.|.######################;"
-        "#######.......................##..#.#.##.##.#.#..##.......######################;"
-        "#################################...#.......#...################################;"
-        "##################################....|...|....#################################;"
-        "###################################.....|.....##################################;"
-        "####################################..|...|..###################################;"
-        "#####################################...|...####################################;"
-        "#####################################.|...|.####################################;"
-        "#####################################...|...####################################;"
-        "################################################################################;"
-        "################################################################################;";
-
-    mk_templ(str, Map_templ_id::trapez_level, std::vector<Map_templ_cell>
-    {
-        {'@', Feature_id::floor},
-        {'.', Feature_id::floor},
-        {'#', Feature_id::wall},
-        {'|', Feature_id::pillar},
-        {'v', Feature_id::brazier},
-        {'o', Feature_id::floor, Actor_id::END, Item_id::trapez}
-    });
-}
-
-} //namespace
+} // namespace
 
 void init()
 {
-    init_templs();
+    TRACE_FUNC_BEGIN;
+
+    load_level_templates();
+
+    load_room_templates();
+
+    TRACE_FUNC_END;
 }
 
-const Map_templ& templ(const Map_templ_id id)
+void save()
 {
-    assert(id != Map_templ_id::END);
-    return templates_[int(id)];
+    TRACE_FUNC_BEGIN;
+
+    for (auto status : room_templ_status_)
+    {
+        saving::put_int((int)status);
+    }
+
+    TRACE_FUNC_END;
 }
 
-} //map_templ_handling
+void load()
+{
+    TRACE_FUNC_BEGIN;
+
+    for (size_t i = 0; i < room_templ_status_.size(); ++i)
+    {
+        room_templ_status_[i] = (RoomTemplStatus)saving::get_int();
+    }
+
+    TRACE_FUNC_END;
+}
+
+const Array2<char>& level_templ(LevelTemplId id)
+{
+    ASSERT(id != LevelTemplId::END);
+
+    return level_templates_[(size_t)id];
+}
+
+RoomTempl* random_room_templ(const P& max_dims)
+{
+    ASSERT(!room_templates_.empty());
+
+    std::vector<RoomTempl*> bucket;
+
+    for (auto& templ : room_templates_)
+    {
+        const auto status = room_templ_status_[templ.base_templ_idx];
+
+        if (status != RoomTemplStatus::unused)
+        {
+            continue;
+        }
+
+        const P templ_dims(templ.symbols.dims());
+
+        if (templ_dims.x <= max_dims.x &&
+            templ_dims.y <= max_dims.y)
+        {
+            bucket.push_back(&templ);
+        }
+    }
+
+    TRACE << "Attempting to find valid room template, for max dimensions: "
+          << max_dims.x << "x" << max_dims.y
+          << std::endl
+          << "Number of candidates found: " << bucket.size()
+          << std::endl;
+
+    if (bucket.empty())
+    {
+        return nullptr;
+    }
+
+    const size_t idx = rnd::range(0, bucket.size() - 1);
+
+    return bucket[idx];
+}
+
+void clear_base_room_templates_used()
+{
+    std::fill(begin(room_templ_status_),
+              end(room_templ_status_),
+              RoomTemplStatus::unused);
+}
+
+void on_base_room_template_placed(const RoomTempl& templ)
+{
+    ASSERT(templ.base_templ_idx < room_templ_status_.size());
+
+    ASSERT(room_templ_status_[templ.base_templ_idx] == RoomTemplStatus::unused);
+
+    room_templ_status_[templ.base_templ_idx] = RoomTemplStatus::placed;
+}
+
+void on_map_discarded()
+{
+    // "Placed" -> "unused"
+    for (size_t i = 0; i < room_templ_status_.size(); ++i)
+    {
+        auto& status = room_templ_status_[i];
+
+        if (status == RoomTemplStatus::placed)
+        {
+            status = RoomTemplStatus::unused;
+        }
+    }
+}
+
+void on_map_ok()
+{
+    // "Placed" -> "used"
+    for (size_t i = 0; i < room_templ_status_.size(); ++i)
+    {
+        auto& status = room_templ_status_[i];
+
+        if (status == RoomTemplStatus::placed)
+        {
+            status = RoomTemplStatus::used;
+        }
+    }
+}
+
+} // map_templates

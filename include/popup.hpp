@@ -1,5 +1,5 @@
-#ifndef POPUP_H
-#define POPUP_H
+#ifndef POPUP_HPP
+#define POPUP_HPP
 
 #include <vector>
 #include <string>
@@ -10,16 +10,15 @@ namespace popup
 {
 
 void show_msg(const std::string& msg,
-              const bool         DRAW_MAP_AND_INTERFACE,
               const std::string& title = "",
-              const Sfx_id        sfx = Sfx_id::END,
-              const int          W_CHANGE = 0);
+              const SfxId sfx = SfxId::END,
+              const int w_change = 0);
 
-int show_menu_msg(
-    const std::string& msg, const bool DRAW_MAP_AND_INTERFACE,
-    const std::vector<std::string>& choices, const std::string& title = "",
-    const Sfx_id sfx = Sfx_id::END);
+int show_menu_msg(const std::string& msg,
+                  const std::vector<std::string>& choices,
+                  const std::string& title = "",
+                  const SfxId sfx = SfxId::END);
 
-} //Popup
+} // popup
 
 #endif

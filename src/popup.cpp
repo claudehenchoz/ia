@@ -1,12 +1,11 @@
 #include "popup.hpp"
 
 #include "config.hpp"
-#include "render.hpp"
+#include "io.hpp"
 #include "text_format.hpp"
 #include "msg_log.hpp"
 #include "query.hpp"
-#include "cmn_types.hpp"
-#include "menu_input.hpp"
+#include "browser.hpp"
 #include "audio.hpp"
 
 namespace popup
@@ -15,42 +14,41 @@ namespace popup
 namespace
 {
 
-const int TEXT_W_STD    = 39;
-const int TEXT_X0_STD   = MAP_W_HALF - ((TEXT_W_STD) / 2);
+const int text_w_std = 39;
+const int text_x0_std = map_w_half - ((text_w_std) / 2);
 
-int print_box_and_get_title_y_pos(const int TEXT_H_TOT, const int TEXT_W)
+int print_box_and_get_title_y_pos(const int text_h_tot,
+                                  const int text_w)
 {
-    const int BOX_W       = TEXT_W + 2;
-    const int BOX_H       = TEXT_H_TOT + 2;
+    const int box_w = text_w + 2;
+    const int box_h = text_h_tot + 2;
 
-    const int X0          = MAP_W_HALF - ((TEXT_W) / 2) - 1;
+    const int x0 = map_w_half - ((text_w) / 2) - 1;
 
-    const int Y0          = MAP_H_HALF - (BOX_H / 2) - 1;
-    const int X1          = X0 + BOX_W - 1;
-    const int Y1          = Y0 + BOX_H - 1;
+    const int y0 = map_h_half - (box_h / 2) - 1;
+    const int x1 = x0 + box_w - 1;
+    const int y1 = y0 + box_h - 1;
 
-    render::cover_area(Panel::map, P(X0, Y0), P(BOX_W, BOX_H));
-    render::draw_box(Rect(X0, Y0, X1, Y1), Panel::map);
+    io::cover_area(Panel::map,
+                       P(x0, y0),
+                       P(box_w, box_h));
 
-    return Y0 + 1;
+    io::draw_box(R(x0, y0, x1, y1),
+                     Panel::map);
+
+    return y0 + 1;
 }
 
 void menu_msg_drawing_helper(const std::vector<std::string>& lines,
                              const std::vector<std::string>& choices,
-                             const bool DRAW_MAP_AND_INTERFACE,
-                             const size_t cur_choice,
-                             const int TEXT_X0,
-                             const int TEXT_H_TOT,
+                             const size_t current_choice,
+                             const int text_x0,
+                             const int text_h_tot,
                              const std::string& title)
 {
-    if (DRAW_MAP_AND_INTERFACE)
-    {
-        render::draw_map_and_interface(false);
-    }
+    int text_width = text_w_std;
 
-    int text_width = TEXT_W_STD;
-
-    //If no message lines, set width to widest menu option or title with
+    // If no message lines, set width to widest menu option or title with
     if (lines.empty())
     {
         text_width = title.size();
@@ -63,38 +61,38 @@ void menu_msg_drawing_helper(const std::vector<std::string>& lines,
         text_width += 2;
     }
 
-    int y = print_box_and_get_title_y_pos(TEXT_H_TOT, text_width);
+    int y = print_box_and_get_title_y_pos(text_h_tot, text_width);
 
     if (!title.empty())
     {
-        render::draw_text_center(title,
-                                   Panel::map,
-                                   P(MAP_W_HALF, y),
-                                   clr_title,
-                                   clr_black,
-                                   true);
+        io::draw_text_center(title,
+                             Panel::map,
+                             P(map_w_half, y),
+                             clr_title,
+                             clr_black,
+                             true);
     }
 
-    const bool SHOW_MSG_CENTERED = lines.size() == 1;
+    const bool show_msg_centered = lines.size() == 1;
 
     for (const std::string& line : lines)
     {
         y++;
 
-        if (SHOW_MSG_CENTERED)
+        if (show_msg_centered)
         {
-            render::draw_text_center(line,
-                                       Panel::map,
-                                       P(MAP_W_HALF, y),
-                                       clr_white,
-                                       clr_black,
-                                       true);
+            io::draw_text_center(line,
+                                 Panel::map,
+                                 P(map_w_half, y),
+                                 clr_white,
+                                 clr_black,
+                                 true);
         }
-        else //Draw the message with left alignment
+        else // Draw the message with left alignment
         {
-            render::draw_text(line,
+            io::draw_text(line,
                               Panel::map,
-                              P(TEXT_X0, y),
+                              P(text_x0, y),
                               clr_white);
         }
 
@@ -108,78 +106,76 @@ void menu_msg_drawing_helper(const std::vector<std::string>& lines,
 
     for (size_t i = 0; i < choices.size(); ++i)
     {
-        Clr clr = i == cur_choice ? clr_menu_highlight : clr_menu_drk;
+        Clr clr =
+            (i == current_choice) ?
+            clr_menu_highlight :
+            clr_menu_drk;
 
-        render::draw_text_center(choices[i],
-                                   Panel::map,
-                                   P(MAP_W_HALF, y),
-                                   clr,
-                                   clr_black,
-                                   true);
+        io::draw_text_center(choices[i],
+                             Panel::map,
+                             P(map_w_half, y),
+                             clr,
+                             clr_black,
+                             true);
+
         ++y;
     }
 
-    render::update_screen();
+    io::update_screen();
 }
 
-} //namespace
+} // namespace
 
 void show_msg(const std::string& msg,
-              const bool DRAW_MAP_AND_INTERFACE,
               const std::string& title,
-              const Sfx_id sfx,
-              const int W_CHANGE)
+              const SfxId sfx,
+              const int w_change)
 {
-    if (DRAW_MAP_AND_INTERFACE)
-    {
-        render::draw_map_and_interface(false);
-    }
+    const int text_w = text_w_std + w_change;
 
-    const int TEXT_W = TEXT_W_STD + W_CHANGE;
+    const auto lines = text_format::split(msg, text_w);
 
-    std::vector<std::string> lines;
-    text_format::split(msg, TEXT_W, lines);
+    const int text_h_tot =  int(lines.size()) + 3;
 
-    const int TEXT_H_TOT =  int(lines.size()) + 3;
+    int y = print_box_and_get_title_y_pos(text_h_tot, text_w);
 
-    int y = print_box_and_get_title_y_pos(TEXT_H_TOT, TEXT_W);
-
-    if (sfx != Sfx_id::END)
+    if (sfx != SfxId::END)
     {
         audio::play(sfx);
     }
 
     if (!title.empty())
     {
-        render::draw_text_center(title, Panel::map,
-                                   P(MAP_W_HALF, y),
-                                   clr_title,
-                                   clr_black,
-                                   true);
+        io::draw_text_center(title,
+                             Panel::map,
+                             P(map_w_half, y),
+                             clr_title,
+                             clr_black,
+                             true);
     }
 
-    const bool SHOW_MSG_CENTERED = lines.size() == 1;
+    const bool show_msg_centered = lines.size() == 1;
 
-    for (std::string& line : lines)
+    for (const std::string& line : lines)
     {
         y++;
 
-        if (SHOW_MSG_CENTERED)
+        if (show_msg_centered)
         {
-            render::draw_text_center(line,
-                                       Panel::map,
-                                       P(MAP_W_HALF, y),
-                                       clr_white,
-                                       clr_black,
-                                       true);
+            io::draw_text_center(line,
+                                 Panel::map,
+                                 P(map_w_half, y),
+                                 clr_white,
+                                 clr_black,
+                                 true);
         }
         else
         {
-            const int TEXT_X0 = TEXT_X0_STD - ((W_CHANGE + 1) / 2);
+            const int text_x0 = text_x0_std - ((w_change + 1) / 2);
 
-            render::draw_text(line,
+            io::draw_text(line,
                               Panel::map,
-                              P(TEXT_X0, y),
+                              P(text_x0, y),
                               clr_white);
         }
 
@@ -188,89 +184,91 @@ void show_msg(const std::string& msg,
 
     y += 2;
 
-    render::draw_text_center("[space/esc/enter] to close",
-                               Panel::map,
-                               P(MAP_W_HALF, y),
-                               clr_menu_medium);
+    io::draw_text_center(confirm_info_str_no_space,
+                         Panel::map,
+                         P(map_w_half, y),
+                         clr_menu_drk);
 
-    render::update_screen();
+    io::update_screen();
 
     query::wait_for_confirm();
-
-    if (DRAW_MAP_AND_INTERFACE)
-    {
-        render::draw_map_and_interface();
-    }
 }
 
 int show_menu_msg(const std::string& msg,
-                  const bool DRAW_MAP_AND_INTERFACE,
                   const std::vector<std::string>& choices,
                   const std::string& title,
-                  const Sfx_id sfx)
+                  const SfxId sfx)
 {
     if (config::is_bot_playing())
     {
         return 0;
     }
 
-    std::vector<std::string> lines;
-    text_format::split(msg, TEXT_W_STD, lines);
+    const auto lines = text_format::split(msg, text_w_std);
 
-    const int TITLE_H         = title.empty() ? 0 : 1;
-    const int NR_MSG_LINES    = int(lines.size());
-    const int NR_BLANK_LINES  = (NR_MSG_LINES == 0 && TITLE_H == 0) ? 0 : 1;
-    const int NR_CHOICES      = int(choices.size());
+    const int title_h = title.empty() ? 0 : 1;
 
-    const int TEXT_H_TOT = TITLE_H + NR_MSG_LINES + NR_BLANK_LINES + NR_CHOICES;
+    const int nr_msg_lines = (int)lines.size();
 
-    Menu_browser browser(NR_CHOICES);
+    const int nr_blank_lines =
+        ((nr_msg_lines == 0) && (title_h == 0)) ?
+        0 : 1;
 
-    if (sfx != Sfx_id::END) {audio::play(sfx);}
+    const int nr_choices = (int)choices.size();
+
+    const int text_h_tot =
+        title_h +
+        nr_msg_lines +
+        nr_blank_lines +
+        nr_choices;
+
+    MenuBrowser browser(nr_choices);
+
+    if (sfx != SfxId::END)
+    {
+        audio::play(sfx);
+    }
 
     menu_msg_drawing_helper(lines,
                             choices,
-                            DRAW_MAP_AND_INTERFACE,
                             browser.y(),
-                            TEXT_X0_STD,
-                            TEXT_H_TOT,
+                            text_x0_std,
+                            text_h_tot,
                             title);
+
+    audio::play(SfxId::menu_browse);
 
     while (true)
     {
-        const Menu_action action = menu_input::action(browser, Menu_input_mode::scroll);
+        const auto input = io::get(true);
+
+        const MenuAction action =
+            browser.read(input,
+                         MenuInputMode::scrolling);
 
         switch (action)
         {
-        case Menu_action::moved:
+        case MenuAction::moved:
             menu_msg_drawing_helper(lines,
                                     choices,
-                                    DRAW_MAP_AND_INTERFACE,
                                     browser.y(),
-                                    TEXT_X0_STD,
-                                    TEXT_H_TOT,
+                                    text_x0_std,
+                                    text_h_tot,
                                     title);
             break;
 
-        case Menu_action::esc:
-        case Menu_action::space:
-            if (DRAW_MAP_AND_INTERFACE)
-            {
-                render::draw_map_and_interface();
-            }
+        case MenuAction::esc:
+        case MenuAction::space:
+            return nr_choices - 1;
 
-            return NR_CHOICES - 1;
-
-        case Menu_action::selected:
-        case Menu_action::selected_shift:
-            if (DRAW_MAP_AND_INTERFACE)
-            {
-                render::draw_map_and_interface();
-            }
-
+        case MenuAction::selected:
+        case MenuAction::selected_shift:
             return browser.y();
+
+        case MenuAction::none:
+            break;
         }
     }
 }
 
-} //Popup
+} // popup

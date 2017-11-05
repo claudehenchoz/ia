@@ -2,7 +2,7 @@
 
 #include "init.hpp"
 
-#include "render.hpp"
+#include "io.hpp"
 #include "game_time.hpp"
 #include "actor_player.hpp"
 #include "actor_mon.hpp"
@@ -12,33 +12,33 @@
 #include "feature_trap.hpp"
 #include "drop.hpp"
 #include "explosion.hpp"
-#include "dungeon_master.hpp"
+#include "game.hpp"
 #include "inventory.hpp"
 #include "map_parsing.hpp"
 #include "item.hpp"
-#include "utils.hpp"
-#include "input.hpp"
 #include "marker.hpp"
 #include "look.hpp"
+#include "map_travel.hpp"
+#include "popup.hpp"
+#include "feature_door.hpp"
+#include "text_format.hpp"
 
 Actor::Actor() :
     pos             (),
-    state_          (Actor_state::alive),
-    clr_            (clr_black),
-    glyph_          (' '),
-    tile_           (Tile_id::empty),
+    delay_          (0),
+    state_          (ActorState::alive),
     hp_             (-1),
     hp_max_         (-1),
     spi_            (-1),
     spi_max_        (-1),
-    lair_pos_      (),
+    lair_pos_       (),
     prop_handler_   (nullptr),
     data_           (nullptr),
     inv_            (nullptr) {}
 
 Actor::~Actor()
 {
-    //Free all items owning actors
+    // Free all items owning actors
     for (Item* item : inv_->backpack_)
     {
         item->clear_actor_carrying();
@@ -56,207 +56,260 @@ Actor::~Actor()
     delete prop_handler_;
 }
 
-bool Actor::has_prop(const Prop_id id) const
+bool Actor::has_prop(const PropId id) const
 {
     return prop_handler_->has_prop(id);
 }
 
-int Actor::ability(const Ability_id id, const bool IS_AFFECTED_BY_PROPS) const
+int Actor::ability(const AbilityId id,
+                   const bool is_affected_by_props) const
 {
-    return data_->ability_vals.val(id, IS_AFFECTED_BY_PROPS, *this);
+    return data_->ability_vals.val(id, is_affected_by_props, *this);
 }
 
-bool Actor::is_spotting_sneaking_actor(Actor& other)
+ActionResult Actor::roll_sneak(const Actor& actor_searching) const
 {
-    const P& other_pos = other.pos;
+    const int sneak_skill = ability(AbilityId::stealth, true);
 
-    const int   PLAYER_SEARCH_MOD   = is_player() ?
-                                      (ability(Ability_id::searching, true) / 3) : 0;
+    const int search_mod =
+        actor_searching.is_player() ?
+        actor_searching.ability(AbilityId::searching, true) :
+        0;
 
-    const auto& abilities_other     = other.data().ability_vals;
+    const int dist = king_dist(pos, actor_searching.pos);
 
-    const int   SNEAK_SKILL         = abilities_other.val(Ability_id::stealth, true, other);
+    // Distance  Sneak bonus
+    // ----------------------
+    // 1         -7
+    // 2          0
+    // 3          7
+    // 4         14
+    // 5         21
+    // 6         28
+    // 7         35
+    // 8         42
+    const int dist_mod = (dist - 2) * 7;
 
-    const int   DIST                = utils::king_dist(pos, other_pos);
+    const Cell& cell = map::cells[pos.x][pos.y];
 
-    const int   SNEAK_DIST_MOD      = utils::constr_in_range(0, (DIST - 1) * 10, 60);
+    const int lgt_mod =
+        cell.is_lit ?
+        20 : 0;
 
-    const Cell& cell                = map::cells[other_pos.x][other_pos.y];
+    const int drk_mod =
+        (cell.is_dark && !cell.is_lit) ?
+        20 : 0;
 
-    const int   SNEAK_LGT_MOD       = cell.is_lit                     ? -40 : 0;
-    const int   SNEAK_DRK_MOD       = (cell.is_dark && ! cell.is_lit) ?  40 : 0;
+    int sneak_tot =
+        sneak_skill
+        - search_mod
+        + dist_mod
+        - lgt_mod
+        + drk_mod;
 
-    const int   SNEAK_TOT           = utils::constr_in_range(
-                                          0,
-                                          SNEAK_SKILL     +
-                                          SNEAK_DIST_MOD  +
-                                          SNEAK_LGT_MOD   +
-                                          SNEAK_DRK_MOD   -
-                                          PLAYER_SEARCH_MOD,
-                                          99);
+    // std::cout << "SNEAKING" << std::endl
+    //           << "------------------" << std::endl
+    //           << "sneak_skill : " << sneak_skill << std::endl
+    //           << "dist_mod    : " << dist_mod << std::endl
+    //           << "lgt_mod     : " << lgt_mod << std::endl
+    //           << "drk_mod     : " << drk_mod << std::endl
+    //           << "sneak_tot   : " << sneak_tot << std::endl;
 
-    return ability_roll::roll(SNEAK_TOT, &other) <= fail;
+    //
+    // NOTE: There is no need to cap the sneak value, since there's always
+    //       critical fails
+    //
+
+    const auto result = ability_roll::roll(sneak_tot);
+
+    return result;
 }
 
-int Actor::hp_max(const bool WITH_MODIFIERS) const
+int Actor::hp_max(const bool with_modifiers) const
 {
-    return WITH_MODIFIERS ? prop_handler_->affect_max_hp(hp_max_) : hp_max_;
-}
+    int result = hp_max_;
 
-Actor_speed Actor::speed() const
-{
-    const auto base_speed = data_->speed;
-
-    int speed_int = int(base_speed);
-
-    //"Slowed" gives speed penalty
-    if (prop_handler_->has_prop(Prop_id::slowed) && speed_int > 0)
+    if (with_modifiers)
     {
-        --speed_int;
+        result = prop_handler_->affect_max_hp(result);
+
+        result = std::max(1, result);
     }
 
-    //"Hasted" or "frenzied" gives speed bonus.
-    if (
-        (prop_handler_->has_prop(Prop_id::hasted) ||
-         prop_handler_->has_prop(Prop_id::frenzied)) &&
-        speed_int < int(Actor_speed::END) - 1)
-    {
-        ++speed_int;
-    }
-
-    assert(speed_int >= 0 && speed_int < int(Actor_speed::END));
-
-    return Actor_speed(speed_int);
+    return result;
 }
 
-void Actor::seen_foes(std::vector<Actor*>& out)
+int Actor::spi_max() const
 {
-    out.clear();
+    int result = spi_max_;
 
-    bool blocked_los[MAP_W][MAP_H];
+    result = prop_handler_->affect_max_spi(result);
 
-    if (!is_player())
+    result = std::max(1, result);
+
+    return result;
+}
+
+int Actor::speed_pct() const
+{
+    // Paralyzed actors always act at normal speed (otherwise paralysis will
+    // barely affect super fast monsters at all)
+    if (has_prop(PropId::paralyzed))
     {
-        Rect los_rect(std::max(0,         pos.x - FOV_STD_RADI_INT),
-                      std::max(0,         pos.y - FOV_STD_RADI_INT),
-                      std::min(MAP_W - 1, pos.x + FOV_STD_RADI_INT),
-                      std::min(MAP_H - 1, pos.y + FOV_STD_RADI_INT));
-
-        map_parse::run(cell_check::Blocks_los(),
-                       blocked_los,
-                       Map_parse_mode::overwrite,
-                       los_rect);
+        return 100;
     }
 
-    for (Actor* actor : game_time::actors)
+    int speed = data_->speed_pct;
+
+    //
+    // Speed modifications due to properties
+    //
+    if (prop_handler_->has_prop(PropId::slowed))
     {
-        if (actor != this && actor->is_alive())
+        speed -= 50;
+    }
+
+    if (prop_handler_->has_prop(PropId::hasted))
+    {
+        speed += 100;
+    }
+
+    if (prop_handler_->has_prop(PropId::frenzied))
+    {
+        speed += 100;
+    }
+
+    if (prop_handler_->has_prop(PropId::clockwork_hasted))
+    {
+        speed += 2000;
+    }
+
+    //
+    // Speed bonus from background/traits?
+    //
+    if (is_player())
+    {
+        if (player_bon::bg() == Bg::ghoul)
         {
-            if (is_player())
-            {
-                if (map::player->can_see_actor(*actor) && !is_leader_of(actor))
-                {
-                    out.push_back(actor);
-                }
-            }
-            else //Not player
-            {
-                const bool IS_HOSTILE_TO_PLAYER = !is_actor_my_leader(map::player);
+            //
+            // NOTE: Keep this the same as the Ghoul monster bonus
+            //
+            speed += 10;
+        }
 
-                const bool IS_OTHER_HOSTILE_TO_PLAYER = actor->is_player() ? false :
-                                                        !actor->is_actor_my_leader(map::player);
+        if (player_bon::traits[(size_t)Trait::dexterous])
+        {
+            speed += 10;
+        }
 
-                const bool IS_ENEMY = IS_HOSTILE_TO_PLAYER != IS_OTHER_HOSTILE_TO_PLAYER;
+        if (player_bon::traits[(size_t)Trait::lithe])
+        {
+            speed += 10;
+        }
 
-                const Mon* const mon = static_cast<const Mon*>(this);
+        const int hp_pct = (hp() * 100) / hp_max(true);
 
-                if (IS_ENEMY && mon->can_see_actor(*actor, blocked_los))
-                {
-                    out.push_back(actor);
-                }
-            }
+        const int perseverant_bon_hp_pct = 50;
+
+        if (player_bon::traits[(size_t)Trait::perseverant] &&
+            (hp_pct < perseverant_bon_hp_pct))
+        {
+            speed += 20;
         }
     }
+
+    const int min_speed = 10;
+
+    speed = std::max(min_speed, speed);
+
+    return speed;
 }
 
-void Actor::place(const P& pos_, Actor_data_t& actor_data)
+void Actor::place(const P& pos_, ActorDataT& actor_data)
 {
-    pos         = pos_;
-    data_       = &actor_data;
-    state_      = Actor_state::alive;
-    clr_        = data_->color;
-    glyph_      = data_->glyph;
-    tile_       = data_->tile;
-    hp_         = hp_max_  = data_->hp;
-    spi_        = spi_max_ = data_->spi;
-    lair_pos_   = pos;
+    pos = pos_;
+
+    data_ = &actor_data;
+
+    state_ = ActorState::alive;
+
+    hp_ = hp_max_ = data_->hp;
+
+    spi_ = spi_max_ = data_->spi;
+
+    lair_pos_ = pos;
 
     inv_ = new Inventory(this);
 
-    prop_handler_ = new Prop_handler(this);
+    prop_handler_ = new PropHandler(this);
+
     prop_handler_->init_natural_props();
 
-    if (data_->id != Actor_id::player)
+    if (data_->id != ActorId::player)
     {
         mk_start_items();
     }
 
     place_hook();
-
-    update_clr();
 }
 
 void Actor::on_std_turn_common()
 {
-    //Do light damage if in lit cell
+    // Do light damage if in lit cell
     if (map::cells[pos.x][pos.y].is_lit)
     {
-        hit(1, Dmg_type::light);
+        hit(1, DmgType::light);
     }
 
     if (is_alive())
     {
-        //Slowly decrease current HP/spirit if above max
-        const int DECR_ABOVE_MAX_N_TURNS = 7;
+        // Slowly decrease current HP/spirit if above max
+        const int decr_above_max_n_turns = 7;
 
-        if (hp() > hp_max(true) && game_time::turn() % DECR_ABOVE_MAX_N_TURNS == 0)
+        const bool decr_this_turn =
+            (game_time::turn_nr() % decr_above_max_n_turns) == 0;
+
+        if ((hp() > hp_max(true)) && decr_this_turn)
         {
             --hp_;
         }
 
-        if (spi() > spi_max() && game_time::turn() % DECR_ABOVE_MAX_N_TURNS == 0)
+        if ((spi() > spi_max()) && decr_this_turn)
         {
             --spi_;
         }
 
-        //Regenerate spirit
-        int regen_spi_n_turns = 15;
+        // Regenerate spirit
+        int regen_spi_n_turns = 18;
 
         if (is_player())
         {
-            if (player_bon::traits[size_t(Trait::stout_spirit)])
+            if (player_bon::traits[(size_t)Trait::stout_spirit])
             {
-                regen_spi_n_turns -= 3;
+                regen_spi_n_turns -= 4;
             }
 
-            if (player_bon::traits[size_t(Trait::strong_spirit)])
+            if (player_bon::traits[(size_t)Trait::strong_spirit])
             {
-                regen_spi_n_turns -= 3;
+                regen_spi_n_turns -= 4;
             }
 
-            if (player_bon::traits[size_t(Trait::mighty_spirit)])
+            if (player_bon::traits[(size_t)Trait::mighty_spirit])
             {
-                regen_spi_n_turns -= 3;
+                regen_spi_n_turns -= 4;
             }
         }
-        else //Is monster
+        else // Is monster
         {
-            //Monsters regen spirit very quickly, so spell casters don't suddenly get
-            //completely handicapped
-            regen_spi_n_turns = 2;
+            // Monsters regen spirit very quickly, so spell casters doesn't
+            // suddenly get completely handicapped
+            regen_spi_n_turns = 1;
         }
 
-        if (game_time::turn() % regen_spi_n_turns == 0)
+        const bool regen_spi_this_turn =
+            (game_time::turn_nr() % regen_spi_n_turns) == 0;
+
+        if (regen_spi_this_turn)
         {
             restore_spi(1, false, Verbosity::silent);
         }
@@ -265,231 +318,325 @@ void Actor::on_std_turn_common()
     on_std_turn();
 }
 
-void Actor::teleport()
+void Actor::teleport(const ShouldCtrlTele ctrl_tele)
 {
-    bool blocked[MAP_W][MAP_H];
-    map_parse::run(cell_check::Blocks_actor(*this, true), blocked);
+    bool blocks_flood[map_w][map_h];
 
-    std::vector<P> pos_bucket;
-    utils::mk_vector_from_bool_map(false, blocked, pos_bucket);
+    map_parsers::BlocksActor(*this, ParseActors::no)
+        .run(blocks_flood);
+
+    // Consider all doors, except for metal doors, to be free
+    for (int x = 0; x < map_w; ++x)
+    {
+        for (int y = 0; y < map_h; ++y)
+        {
+            const auto* const r = map::cells[x][y].rigid;
+
+            if (r->id() == FeatureId::door)
+            {
+                const auto* const door = static_cast<const Door*>(r);
+
+                // - For the player, only metal doors block the flood
+                // - For monsters, no doors block the flood
+                if ((door->type() != DoorType::metal) ||
+                    !is_player())
+                {
+                    blocks_flood[x][y] = false;
+                }
+            }
+        }
+    }
+
+    int flood[map_w][map_h];
+
+    floodfill(pos,
+              blocks_flood,
+              flood);
+
+    bool blocked[map_w][map_h];
+
+    map_parsers::BlocksActor(*this, ParseActors::yes)
+        .run(blocked);
+
+    for (int x = 0; x < map_w; ++x)
+    {
+        for (int y = 0; y < map_h; ++y)
+        {
+            if (flood[x][y] <= 0)
+            {
+                blocked[x][y] = true;
+            }
+        }
+    }
+
+    // Make sure we do not teleport to the position we are standing in
+    blocked[pos.x][pos.y] = false;
+
+    //
+    // Teleport control?
+    //
+    const bool can_actor_use_tele_ctrl =
+        is_player() &&
+        prop_handler_->has_prop(PropId::tele_ctrl) &&
+        !prop_handler_->has_prop(PropId::confused);
+
+    if ((ctrl_tele == ShouldCtrlTele::always) ||
+        ((ctrl_tele == ShouldCtrlTele::if_tele_ctrl_prop) &&
+         can_actor_use_tele_ctrl))
+    {
+        auto tele_ctrl_state = std::unique_ptr<State>(
+            new CtrlTele(pos, blocked));
+
+        states::push(std::move(tele_ctrl_state));
+
+        return;
+    }
+
+    //
+    // Teleport randomly
+    //
+    const auto pos_bucket = to_vec(blocked, false);
 
     if (pos_bucket.empty())
     {
         return;
     }
 
-    if (!is_player() && map::player->can_see_actor(*this))
+    const P tgt_pos = rnd::element(pos_bucket);
+
+    teleport(tgt_pos, blocked);
+}
+
+void Actor::teleport(P p, bool blocked[map_w][map_h])
+{
+    if (!is_player() &&
+        map::player->can_see_actor(*this))
     {
-        msg_log::add(name_the() + " suddenly disappears!");
+        const std::string actor_name_the =
+            text_format::first_to_upper(
+                name_the());
+
+        msg_log::add(actor_name_the + mon_disappear_msg);
     }
 
-    P   tgt_pos                   = pos_bucket[rnd::range(0, pos_bucket.size() - 1)];
-    bool  player_has_tele_control   = false;
-
-    if (is_player())
-    {
-        map::player->update_fov();
-        render::draw_map_and_interface();
-        map::cpy_render_array_to_visual_memory();
-
-        //Teleport control?
-
-        if (
-            prop_handler_->has_prop(Prop_id::tele_ctrl) &&
-            !prop_handler_->has_prop(Prop_id::confused))
-        {
-            player_has_tele_control = true;
-
-            auto chance_of_tele_success = [](const P & tgt)
-            {
-                const int DIST = utils::king_dist(map::player->pos, tgt);
-                return utils::constr_in_range(25, 100 - DIST, 95);
-            };
-
-            auto on_marker_at_pos = [chance_of_tele_success](const P & p)
-            {
-                msg_log::clear();
-                look::print_location_info_msgs(p);
-
-                const int CHANCE_PCT = chance_of_tele_success(p);
-
-                msg_log::add(to_str(CHANCE_PCT) + "% chance of success.");
-
-                msg_log::add("[enter] to teleport here");
-                msg_log::add(cancel_info_str_no_space);
-            };
-
-            auto on_key_press = [](const P & p, const Key_data & key_data)
-            {
-                (void)p;
-
-                if (key_data.sdl_key == SDLK_RETURN)
-                {
-                    msg_log::clear();
-                    return Marker_done::yes;
-                }
-
-                return Marker_done::no;
-            };
-
-            msg_log::add("I have the power to control teleportation.",
-                         clr_white,
-                         false,
-                         More_prompt_on_msg::yes);
-
-            const P marker_tgt_pos = marker::run(Marker_use_player_tgt::no,
-                                                 on_marker_at_pos,
-                                                 on_key_press,
-                                                 Marker_show_blocked::no);
-
-            if (blocked[marker_tgt_pos.x][marker_tgt_pos.y])
-            {
-                //Blocked
-                msg_log::add("Something is blocking me...",
-                             clr_white,
-                             false,
-                             More_prompt_on_msg::yes);
-            }
-            else if (rnd::percent(chance_of_tele_success(marker_tgt_pos)))
-            {
-                //Success
-                tgt_pos = marker_tgt_pos;
-            }
-            else //Distance roll failed
-            {
-                msg_log::add("I failed to go there...",
-                             clr_white,
-                             false,
-                             More_prompt_on_msg::yes);
-            }
-        }
-    }
-    else //Is a monster
+    if (!is_player())
     {
         static_cast<Mon*>(this)->player_aware_of_me_counter_ = 0;
     }
 
-    pos = tgt_pos;
+    // If actor was held by a spider web, destroy it
+
+    //
+    // TODO: If something like a bear trap is implemented, the code below
+    //       needs to be adapted to consider other "hold" type traps
+    //
+    Rigid* const rigid = map::cells[pos.x][pos.y].rigid;
+
+    if (rigid->id() == FeatureId::trap)
+    {
+        Trap* const trap = static_cast<Trap*>(rigid);
+
+        if (trap->type() == TrapId::web &&
+            trap->is_holding_actor())
+        {
+            trap->destroy();
+        }
+    }
+
+    // Hostile void travelers "intercepts" players teleporting, and calls the
+    // player to them
+    bool is_affected_by_void_traveler = false;
 
     if (is_player())
     {
-        map::player->update_fov();
-
-        std::vector<Actor*> player_seen_foes;
-        map::player->seen_foes(player_seen_foes);
-
-        for (Actor* const actor : player_seen_foes)
+        for (Actor* const actor : game_time::actors)
         {
-            static_cast<Mon*>(actor)->set_player_aware_of_me();
+            const auto actor_id = actor->id();
+
+            const bool is_void_traveler =
+                (actor_id == ActorId::void_traveler) ||
+                (actor_id == ActorId::elder_void_traveler);
+
+            if (is_void_traveler &&
+                (actor->state() == ActorState::alive) &&
+                actor->prop_handler().allow_act() &&
+                !actor->is_actor_my_leader(map::player) &&
+                (static_cast<Mon*>(actor)->aware_of_player_counter_ > 0))
+            {
+                std::vector<P> p_bucket;
+
+                for (const P& d : dir_utils::dir_list)
+                {
+                    const P adj_p(actor->pos + d);
+
+                    if (!blocked[adj_p.x][adj_p.y])
+                    {
+                        p_bucket.push_back(adj_p);
+                    }
+                }
+
+                if (!p_bucket.empty())
+                {
+                    // Set new teleport destination
+                    p = rnd::element(p_bucket);
+
+                    const std::string actor_name_a =
+                        text_format::first_to_upper(
+                            actor->name_a());
+
+                    msg_log::add(actor_name_a +
+                                 " intercepts my teleportation!");
+
+                    static_cast<Mon*>(actor)->become_aware_player(false);
+
+                    is_affected_by_void_traveler = true;
+
+                    break;
+                }
+            }
         }
+    }
 
-        render::draw_map_and_interface();
+    // Update actor position to new position
+    pos = p;
 
-        map::cpy_render_array_to_visual_memory();
+    map::update_vision();
 
-        if (!player_has_tele_control)
+    // When the player teleports, remove awareness for all monsters not seeing
+    // the player after the teleport
+    if (is_player())
+    {
+        bool blocks_los[map_w][map_h];
+
+        const R r = fov::get_fov_rect(pos);
+
+        map_parsers::BlocksLos()
+            .run(blocks_los, MapParseMode::overwrite, r);
+
+        for (auto* const actor : game_time::actors)
         {
-            msg_log::add("I suddenly find myself in a different location!");
-            prop_handler_->try_add(new Prop_confused(Prop_turns::specific, 8));
+            if (actor == map::player)
+            {
+                continue;
+            }
+
+            auto* const mon = static_cast<Mon*>(actor);
+
+            if (!mon->can_see_actor(*this, blocks_los))
+            {
+                mon->aware_of_player_counter_ = 0;
+            }
         }
+    }
+
+    const auto player_seen_actors = map::player->seen_actors();
+
+    for (Actor* const actor : player_seen_actors)
+    {
+        static_cast<Mon*>(actor)->set_player_aware_of_me();
+    }
+
+    if (is_player() &&
+        (!prop_handler_->has_prop(PropId::tele_ctrl) ||
+         prop_handler_->has_prop(PropId::confused) ||
+         is_affected_by_void_traveler))
+    {
+        msg_log::add("I suddenly find myself in a different location!");
+
+        prop_handler_->apply(new PropConfused(PropTurns::specific, 8));
     }
 }
 
-void Actor::update_clr()
+TileId Actor::tile() const
 {
-    if (state_ != Actor_state::alive)
+    if (is_corpse())
     {
-        clr_ = data_->color;
-        return;
+        return TileId::corpse2;
     }
 
-    if (prop_handler_->affect_actor_clr(clr_))
-    {
-        return;
-    }
-
-    if (is_player() && map::player->active_explosive)
-    {
-        clr_ = clr_yellow;
-        return;
-    }
-
-    if (is_player() && has_prop(Prop_id::invis))
-    {
-        clr_ = clr_gray;
-        return;
-    }
-
-    clr_ = data_->color;
+    return data_->tile;
 }
 
-bool Actor::restore_hp(const int HP_RESTORED,
-                       const bool IS_ALLOWED_ABOVE_MAX,
+char Actor::glyph() const
+{
+    if (is_corpse())
+    {
+        return '&';
+    }
+
+    return data_->glyph;
+}
+
+bool Actor::restore_hp(const int hp_restored,
+                       const bool is_allowed_above_max,
                        const Verbosity verbosity)
 {
-    bool        is_hp_gained    = IS_ALLOWED_ABOVE_MAX;
-    const int   DIF_FROM_MAX    = hp_max(true) - HP_RESTORED;
+    bool is_hp_gained = is_allowed_above_max;
 
-    //If hp is below limit, but restored hp will push it over the limit, HP is set to max.
-    if (!IS_ALLOWED_ABOVE_MAX && hp() > DIF_FROM_MAX && hp() < hp_max(true))
-    {
-        hp_             = hp_max(true);
-        is_hp_gained    = true;
-    }
+    const int dif_from_max = hp_max(true) - hp_restored;
 
-    //If HP is below limit, and restored hp will NOT push it over the limit -
-    //restored hp is added to current.
-    if (IS_ALLOWED_ABOVE_MAX || hp() <= DIF_FROM_MAX)
+    // If hp is below limit, but restored hp will push it over the limit, hp is
+    // set to max.
+    if (!is_allowed_above_max &&
+        (hp() > dif_from_max) &&
+        (hp() < hp_max(true)))
     {
-        hp_ += HP_RESTORED;
+        hp_ = hp_max(true);
         is_hp_gained = true;
     }
 
-    update_clr();
+    // If hp is below limit, and restored hp will NOT push it over the limit -
+    // restored hp is added to current.
+    if (is_allowed_above_max ||
+        (hp() <= dif_from_max))
+    {
+        hp_ += hp_restored;
+        is_hp_gained = true;
+    }
 
-    if (verbosity == Verbosity::verbose && is_hp_gained)
+    if ((verbosity == Verbosity::verbose) &&
+        (is_hp_gained))
     {
         if (is_player())
         {
             msg_log::add("I feel healthier!", clr_msg_good);
         }
-        else //Is a monster
+        else // Is a monster
         {
             if (map::player->can_see_actor(*this))
             {
-                msg_log::add(data_->name_the + " looks healthier.");
+                const std::string actor_name_the =
+                    text_format::first_to_upper(
+                        data_->name_the);
+
+                msg_log::add(actor_name_the + " looks healthier.");
             }
         }
-
-        render::draw_map_and_interface();
     }
 
     return is_hp_gained;
 }
 
-bool Actor::restore_spi(const int SPI_RESTORED, const bool IS_ALLOWED_ABOVE_MAX,
+bool Actor::restore_spi(const int spi_restored,
+                        const bool is_allowed_above_max,
                         const Verbosity verbosity)
 {
-    bool is_spi_gained = IS_ALLOWED_ABOVE_MAX;
+    // Maximum allowed level to increase spirit to
+    // * If we allow above max, we can raise spirit "infinitely"
+    // * Otherwise we cap to max spirit, or current spirit, whichever is higher
+    const int limit =
+        is_allowed_above_max ?
+        INT_MAX :
+        std::max(spi_, spi_max());
 
-    const int DIF_FROM_MAX = spi_max() - SPI_RESTORED;
+    const int spi_before = spi_;
 
-    //If spi is below limit, but will be pushed over the limit, spi is set to max.
-    if (!IS_ALLOWED_ABOVE_MAX && spi() > DIF_FROM_MAX && spi() < spi_max())
-    {
-        spi_        = spi_max();
-        is_spi_gained = true;
-    }
+    spi_ = std::min(spi_ + spi_restored, limit);
 
-    //If spi is below limit, and will not NOT be pushed over the limit - restored spi is
-    //added to current.
-    if (IS_ALLOWED_ABOVE_MAX || spi() <= DIF_FROM_MAX)
-    {
-        spi_ += SPI_RESTORED;
-        is_spi_gained = true;
-    }
+    const bool is_spi_gained = spi_ > spi_before;
 
-    if (verbosity == Verbosity::verbose && is_spi_gained)
+    if (verbosity == Verbosity::verbose &&
+        is_spi_gained)
     {
         if (is_player())
         {
@@ -499,11 +646,13 @@ bool Actor::restore_spi(const int SPI_RESTORED, const bool IS_ALLOWED_ABOVE_MAX,
         {
             if (map::player->can_see_actor(*this))
             {
-                msg_log::add(data_->name_the + " looks more spirited.");
+                const std::string actor_name_the =
+                    text_format::first_to_upper(
+                        data_->name_the);
+
+                msg_log::add(actor_name_the + " looks more spirited.");
             }
         }
-
-        render::draw_map_and_interface();
     }
 
     return is_spi_gained;
@@ -511,97 +660,108 @@ bool Actor::restore_spi(const int SPI_RESTORED, const bool IS_ALLOWED_ABOVE_MAX,
 
 void Actor::set_hp_and_spi_to_max()
 {
-    hp_     = hp_max(true);
-    spi_    = spi_max();
+    hp_ = hp_max(true);
+    spi_ = spi_max();
 }
 
-void Actor::change_max_hp(const int CHANGE, const Verbosity verbosity)
+void Actor::change_max_hp(const int change, const Verbosity verbosity)
 {
-    hp_max_ = std::max(1, hp_max_ + CHANGE);
+    hp_max_ = std::max(1, hp_max_ + change);
 
     if (verbosity == Verbosity::verbose)
     {
         if (is_player())
         {
-            if (CHANGE > 0)
+            if (change > 0)
             {
                 msg_log::add("I feel more vigorous!", clr_msg_good);
             }
-            else if (CHANGE < 0)
+            else if (change < 0)
             {
                 msg_log::add("I feel frailer!", clr_msg_bad);
             }
         }
-        else //Is monster
+        else // Is monster
         {
             if (map::player->can_see_actor(*this))
             {
-                if (CHANGE > 0)
+                const std::string actor_name_the =
+                    text_format::first_to_upper(
+                        name_the());
+
+                if (change > 0)
                 {
-                    msg_log::add(name_the() + " looks more vigorous.");
+                    msg_log::add(actor_name_the + " looks more vigorous.");
                 }
-                else if (CHANGE < 0)
+                else if (change < 0)
                 {
-                    msg_log::add(name_the() + " looks frailer.");
+                    msg_log::add(actor_name_the + " looks frailer.");
                 }
             }
         }
     }
 }
 
-void Actor::change_max_spi(const int CHANGE, const Verbosity verbosity)
+void Actor::change_max_spi(const int change, const Verbosity verbosity)
 {
-    spi_max_ = std::max(1, spi_max_ + CHANGE);
+    spi_max_ = std::max(1, spi_max_ + change);
 
     if (verbosity == Verbosity::verbose)
     {
         if (is_player())
         {
-            if (CHANGE > 0)
+            if (change > 0)
             {
                 msg_log::add("My spirit is stronger!", clr_msg_good);
             }
-            else if (CHANGE < 0)
+            else if (change < 0)
             {
                 msg_log::add("My spirit is weaker!", clr_msg_bad);
             }
         }
-        else //Is monster
+        else // Is monster
         {
             if (map::player->can_see_actor(*this))
             {
-                if (CHANGE > 0)
+                const std::string actor_name_the =
+                    text_format::first_to_upper(
+                        name_the());
+
+                if (change > 0)
                 {
-                    msg_log::add(name_the() + " appears to grow in spirit.");
+                    msg_log::add(actor_name_the +
+                                 " appears to grow in spirit.");
                 }
-                else if (CHANGE < 0)
+                else if (change < 0)
                 {
-                    msg_log::add(name_the() + " appears to shrink in spirit.");
+                    msg_log::add(actor_name_the +
+                                 " appears to shrink in spirit.");
                 }
             }
         }
     }
 }
 
-Actor_died Actor::hit(int dmg,
-                      const Dmg_type dmg_type,
-                      const Dmg_method method,
-                      const Allow_wound allow_wound)
+ActorDied Actor::hit(int dmg,
+                     const DmgType dmg_type,
+                     const DmgMethod method,
+                     const AllowWound allow_wound,
+                     const Actor* const attacker)
 {
-    TRACE_FUNC_BEGIN_VERBOSE;
+    const int hp_pct_before = (hp() * 100) / hp_max(true);
 
-    if (state_ == Actor_state::destroyed)
+    if (state_ == ActorState::destroyed)
     {
         TRACE_FUNC_END_VERBOSE;
-        return Actor_died::no;
+
+        return ActorDied::no;
     }
 
-    TRACE_VERBOSE << "Damage from parameter: " << dmg << std::endl;
-
-    //Damage type is "light", and actor is not light sensitive?
-    if (dmg_type == Dmg_type::light && !prop_handler_->has_prop(Prop_id::lgtSens))
+    // Damage type is "light", and actor is not light sensitive?
+    if (dmg_type == DmgType::light &&
+        !prop_handler_->has_prop(PropId::lgt_sens))
     {
-        return Actor_died::no;
+        return ActorDied::no;
     }
 
     if (is_player())
@@ -609,29 +769,38 @@ Actor_died Actor::hit(int dmg,
         map::player->interrupt_actions();
     }
 
-    //Damage to corpses
-    //NOTE: Corpse is automatically destroyed if damage is high enough, otherwise it is
-    //destroyed with a random chance
+    // Damage to corpses
     if (is_corpse() && !is_player())
     {
-        assert(data_->can_leave_corpse);
+        ASSERT(data_->can_leave_corpse);
 
-        if (rnd::fraction(3, 4) || dmg >= ((hp_max(true) * 2) / 3))
+        // Chance to destroy is X in Y, where
+        // X = damage dealt * 4
+        // Y = maximum actor hit points
+
+        const int den = hp_max(true);
+
+        const int num = std::min(dmg * 4, den);
+
+        if (rnd::fraction(num, den))
         {
-            if (method == Dmg_method::kick)
+            if ((method == DmgMethod::kicking) ||
+                (method == DmgMethod::blunt) ||
+                (method == DmgMethod::slashing) ||
+                (method == DmgMethod::piercing))
             {
                 Snd snd("*Crack!*",
-                        Sfx_id::hit_corpse_break,
-                        Ignore_msg_if_origin_seen::yes,
+                        SfxId::hit_corpse_break,
+                        IgnoreMsgIfOriginSeen::yes,
                         pos,
                         nullptr,
-                        Snd_vol::low,
-                        Alerts_mon::yes);
+                        SndVol::low,
+                        AlertsMon::yes);
 
-                snd_emit::run(snd);
+                snd.run();
             }
 
-            state_ = Actor_state::destroyed;
+            destroy();
 
             if (is_humanoid())
             {
@@ -640,115 +809,158 @@ Actor_died Actor::hit(int dmg,
 
             if (map::cells[pos.x][pos.y].is_seen_by_player)
             {
-                const std::string corpse_name = corpse_name_the();
-
-                assert(!corpse_name.empty());
-
-                msg_log::add(corpse_name_the() + " is destroyed.");
+                msg_log::add(text_format::first_to_upper(corpse_name_the()) +
+                             " is destroyed.");
             }
         }
-        else //Not destroyed
+        else // Not destroyed
         {
-            if (method == Dmg_method::kick)
+            if ((method == DmgMethod::kicking) ||
+                (method == DmgMethod::blunt) ||
+                (method == DmgMethod::slashing) ||
+                (method == DmgMethod::piercing))
             {
-                Snd snd("*Thud*",
-                        Sfx_id::hit_medium,
-                        Ignore_msg_if_origin_seen::yes,
+                const std::string msg =
+                    ((method == DmgMethod::blunt) ||
+                     (method == DmgMethod::kicking)) ?
+                    "*Thud!*" :
+                    "*Chop!*";
+
+                Snd snd(msg,
+                        SfxId::hit_medium,
+                        IgnoreMsgIfOriginSeen::yes,
                         pos,
                         nullptr,
-                        Snd_vol::low,
-                        Alerts_mon::yes);
+                        SndVol::low,
+                        AlertsMon::yes);
 
-                snd_emit::run(snd);
+                snd.run();
             }
         }
 
-        TRACE_FUNC_END_VERBOSE;
-        return Actor_died::no;
+        return ActorDied::no;
     }
 
-    if (dmg_type == Dmg_type::spirit)
+    if (dmg_type == DmgType::spirit)
     {
         return hit_spi(dmg);
     }
 
-    //Property resists?
-    const auto verbosity = is_alive() ? Verbosity::verbose : Verbosity::silent;
+    // Property resists damage?
+    const auto verbosity =
+        is_alive() ?
+        Verbosity::verbose :
+        Verbosity::silent;
 
-    if (prop_handler_->try_resist_dmg(dmg_type, verbosity))
+    const bool is_dmg_resisted =
+        prop_handler_->is_resisting_dmg(
+            dmg_type,
+            attacker,
+            verbosity);
+
+    if (is_dmg_resisted)
     {
-        TRACE_FUNC_END_VERBOSE;
-        return Actor_died::no;
+        return ActorDied::no;
     }
 
-    //Filter damage through worn armor
+    //
+    // TODO: Perhaps allow zero damage?
+    //
     dmg = std::max(1, dmg);
 
-    if (dmg_type == Dmg_type::physical && is_humanoid())
+    if (dmg_type == DmgType::physical)
     {
-        Armor* armor = static_cast<Armor*>(inv_->item_in_slot(Slot_id::body));
-
-        if (armor)
-        {
-            TRACE_VERBOSE << "Has armor, running hit on armor" << std::endl;
-
-            dmg = armor->take_dur_hit_and_get_reduced_dmg(dmg);
-
-            if (armor->is_destroyed())
-            {
-                TRACE << "Armor was destroyed" << std::endl;
-
-                if (is_player())
-                {
-                    const std::string armor_name =
-                        armor->name(Item_ref_type::plain, Item_ref_inf::none);
-
-                    msg_log::add("My " + armor_name + " is torn apart!", clr_msg_note);
-                }
-
-                delete armor;
-                armor = nullptr;
-                inv_->slots_[int(Slot_id::body)].item = nullptr;
-            }
-        }
+        dmg = hit_armor(dmg);
     }
 
-    on_hit(dmg, dmg_type, method, allow_wound);
+    // Fire/electricity damage reduction from the Resistant trait?
+    if (((dmg_type == DmgType::fire) ||
+         (dmg_type == DmgType::electric)) &&
+        is_player() &&
+        player_bon::traits[(size_t)Trait::resistant])
+    {
+        dmg /= 2;
+    }
 
-    TRACE_VERBOSE << "Damage after on_hit(): " << dmg << std::endl;
+    //
+    // TODO: Perhaps allow zero damage?
+    //
+    dmg = std::max(1, dmg);
+
+    on_hit(dmg,
+           dmg_type,
+           method,
+           allow_wound);
 
     prop_handler_->on_hit();
 
+    //
+    // TODO: Perhaps allow zero damage?
+    //
     dmg = std::max(1, dmg);
 
-    if (!is_player() || !config::is_bot_playing())
+    if (!(is_player() && config::is_bot_playing()))
     {
         hp_ -= dmg;
     }
 
     if (hp() <= 0)
     {
-        const bool IS_ON_BOTTOMLESS = map::cells[pos.x][pos.y].rigid->is_bottomless();
+        const bool is_on_bottomless =
+            map::cells[pos.x][pos.y].rigid->is_bottomless();
 
-        const bool IS_DMG_ENOUGH_TO_DESTROY = dmg > ((hp_max(true) * 3) / 2);
+        //
+        // Destroy the corpse if the killing blow damage is either:
+        //
+        // * Above a threshold relative to the actor's maximum hit points, or
+        // * Above a fixed value threshold
+        //
+        // The purpose of the first case is to make it very likely that small
+        // creatures like rats are destroyed.
+        //
+        // The purpose of the second point is that powerful attacks like
+        // explosions should always destroy the corpse, even if the creature
+        // has a very high pool of hit points.
+        //
 
-        const bool IS_DESTROYED = !data_->can_leave_corpse  ||
-                                  IS_ON_BOTTOMLESS          ||
-                                  IS_DMG_ENOUGH_TO_DESTROY;
+        const int dmg_threshold_relative = (hp_max(true) * 3) / 2;
 
-        die(IS_DESTROYED, !IS_ON_BOTTOMLESS, !IS_ON_BOTTOMLESS);
+        const int dmg_threshold_absolute = 14;
 
-        TRACE_FUNC_END_VERBOSE;
-        return Actor_died::yes;
+        const bool is_destroyed =
+            !data_->can_leave_corpse ||
+            is_on_bottomless ||
+            has_prop(PropId::summoned) ||
+            (dmg >= dmg_threshold_relative) ||
+            (dmg >= dmg_threshold_absolute);
+
+        die(is_destroyed,       // Is destroyed
+            !is_on_bottomless,  // Allow gore
+            !is_on_bottomless); // Allow dropping items
+
+        return ActorDied::yes;
     }
-    else //HP is greater than 0
+
+    // HP is greater than 0
+
+    const int hp_pct_after = (hp() * 100) / hp_max(true);
+
+    const int hp_warn_lvl = 25;
+
+    if (is_player() &&
+        (hp_pct_before > hp_warn_lvl) &&
+        (hp_pct_after <= hp_warn_lvl))
     {
-        TRACE_FUNC_END_VERBOSE;
-        return Actor_died::no;
+        msg_log::add("-LOW HP WARNING!-",
+                     clr_msg_bad,
+                     true,
+                     MorePromptOnMsg::yes);
     }
+
+    return ActorDied::no;
 }
 
-Actor_died Actor::hit_spi(const int DMG, const Verbosity verbosity)
+ActorDied Actor::hit_spi(const int dmg, const Verbosity verbosity)
 {
     if (verbosity == Verbosity::verbose)
     {
@@ -762,41 +974,177 @@ Actor_died Actor::hit_spi(const int DMG, const Verbosity verbosity)
 
     if (!is_player() || !config::is_bot_playing())
     {
-        spi_ = std::max(0, spi_ - DMG);
+        spi_ = std::max(0, spi_ - dmg);
     }
 
     if (spi() <= 0)
     {
         if (is_player())
         {
-            msg_log::add("All my spirit is depleted, I am devoid of life!", clr_msg_bad);
+            msg_log::add("All my spirit is depleted, I am devoid of life!",
+                         clr_msg_bad);
         }
-        else //Is monster
+        else // Is monster
         {
             if (map::player->can_see_actor(*this))
             {
-                msg_log::add(name_the() + " has no spirit left!");
+                const std::string actor_name_the =
+                    text_format::first_to_upper(
+                        name_the());
+
+                msg_log::add(actor_name_the + " has no spirit left!");
             }
         }
 
-        const bool IS_ON_BOTTOMLESS = map::cells[pos.x][pos.y].rigid->is_bottomless();
-        const bool IS_DESTROYED     = !data_->can_leave_corpse || IS_ON_BOTTOMLESS;
+        const bool is_on_bottomless =
+            map::cells[pos.x][pos.y].rigid->is_bottomless();
 
-        die(IS_DESTROYED, false, true);
-        return Actor_died::yes;
+        const bool is_destroyed =
+            !data_->can_leave_corpse ||
+            is_on_bottomless ||
+            has_prop(PropId::summoned);
+
+        die(is_destroyed, false, true);
+
+        return ActorDied::yes;
     }
 
-    return Actor_died::no;
+    // SP is greater than 0
+
+    return ActorDied::no;
 }
 
-void Actor::die(const bool IS_DESTROYED, const bool ALLOW_GORE, const bool ALLOW_DROP_ITEMS)
+int Actor::armor_points() const
 {
-    assert(data_->can_leave_corpse || IS_DESTROYED);
+    int ap = 0;
 
-    //Check all monsters and unset this actor as leader
+    // Worn armor
+    if (is_humanoid())
+    {
+        Armor* armor =
+            static_cast<Armor*>(inv_->item_in_slot(SlotId::body));
+
+        if (armor)
+        {
+            ap += armor->armor_points();
+        }
+    }
+
+    // "Natural armor"
+    if (is_player())
+    {
+        if (player_bon::traits[(size_t)Trait::thick_skinned])
+        {
+            ++ap;
+        }
+    }
+
+    return ap;
+}
+
+int Actor::hit_armor(int dmg)
+{
+    //
+    // NOTE: We retrieve armor points BEFORE damaging the armor - since it
+    //       should reduce damage taken even if it gets damaged or destroyed
+    //
+    const int ap = armor_points();
+
+    // Danage worn armor
+    if (is_humanoid())
+    {
+        Armor* armor =
+            static_cast<Armor*>(inv_->item_in_slot(SlotId::body));
+
+        if (armor)
+        {
+            TRACE_VERBOSE << "Has armor, running hit on armor" << std::endl;
+
+            armor->hit(dmg);
+
+            if (armor->is_destroyed())
+            {
+                TRACE << "Armor was destroyed" << std::endl;
+
+                if (is_player())
+                {
+                    const std::string armor_name =
+                        armor->name(ItemRefType::plain, ItemRefInf::none);
+
+                    msg_log::add("My " + armor_name + " is torn apart!",
+                                 clr_msg_note);
+                }
+
+                inv_->remove_item_in_slot(SlotId::body, true);
+
+                armor = nullptr;
+            }
+        }
+    }
+
+    // Reduce damage by the total ap value - the new damage value may be
+    // negative, this is the callers resonsibility to handle
+    dmg -= ap;
+
+    return dmg;
+}
+
+void Actor::die(const bool is_destroyed,
+                const bool allow_gore,
+                const bool allow_drop_items)
+{
+    TRACE_FUNC_BEGIN_VERBOSE;
+
+    // Save player with Talisman of Resurrection?
+    if (is_player() &&
+        (map::player->ins() < 100) &&   // Not dead due to insanity?
+        (spi() > 0) &&                  // Not dead due to depleted spirit?
+        inv_->has_item_in_backpack(ItemId::resurrect_talisman))
+    {
+        inv_->decr_item_type_in_backpack(ItemId::resurrect_talisman);
+
+        msg_log::more_prompt();
+
+        io::clear_screen();
+
+        io::update_screen();
+
+        const std::string msg =
+            "Strange emptiness surrounds me. An eternity passes as I lay "
+            "frozen in a world of shadows. Suddenly I awake!";
+
+        popup::show_msg(msg, "Dead");
+
+        restore_hp(999,
+                   false,
+                   Verbosity::silent);
+
+        prop_handler_->end_prop(PropId::wound, false);
+
+        // If player died due to falling down a chasm, go to next level
+        if (map::cells[pos.x][pos.y].rigid->is_bottomless())
+        {
+            map_travel::go_to_nxt();
+        }
+
+        msg_log::add("I LIVE AGAIN!");
+
+        game::add_history_event("I was brought back from the dead.");
+
+        map::player->incr_shock(ShockLvl::mind_shattering,
+                                ShockSrc::misc);
+
+        return;
+    }
+
+    ASSERT(data_->can_leave_corpse || is_destroyed);
+
+    // Check all monsters and unset this actor as leader
     for (Actor* other : game_time::actors)
     {
-        if (other != this && !other->is_player() && is_leader_of(other))
+        if (other != this &&
+            !other->is_player() &&
+            is_leader_of(other))
         {
             static_cast<Mon*>(other)->leader_ = nullptr;
         }
@@ -806,13 +1154,14 @@ void Actor::die(const bool IS_DESTROYED, const bool ALLOW_GORE, const bool ALLOW
 
     if (!is_player())
     {
-        //If this monster is player's target, unset the target
+        // If this monster is player's target, unset the target
         if (map::player->tgt_ == this)
         {
             map::player->tgt_ = nullptr;
         }
 
-        //Print death messages
+        TRACE_VERBOSE << "Printing death message" << std::endl;
+
         if (map::player->can_see_actor(*this))
         {
             can_player_see_dying_actor = true;
@@ -826,56 +1175,59 @@ void Actor::die(const bool IS_DESTROYED, const bool ALLOW_GORE, const bool ALLOW
         }
     }
 
-    if (IS_DESTROYED)
+    if (is_destroyed)
     {
-        state_ = Actor_state::destroyed;
+        destroy();
     }
-    else //Not destroyed
+    else // Not destroyed
     {
-        state_ = Actor_state::corpse;
-    }
-
-    if (!is_player() && is_humanoid())
-    {
-        Snd snd("I hear agonized screaming.",
-                Sfx_id::END,
-                Ignore_msg_if_origin_seen::yes,
-                pos,
-                this,
-                Snd_vol::low,
-                Alerts_mon::no);
-
-        snd_emit::run(snd);
+        state_ = ActorState::corpse;
     }
 
-    if (ALLOW_DROP_ITEMS)
+    if (!is_player())
     {
-        item_drop::drop_all_characters_items(*this);
+        // This is a monster
+
+        if (is_humanoid())
+        {
+            TRACE_VERBOSE << "Emitting death sound" << std::endl;
+
+            Snd snd("I hear agonized screaming.",
+                    SfxId::END,
+                    IgnoreMsgIfOriginSeen::yes,
+                    pos,
+                    this,
+                    SndVol::high,
+                    AlertsMon::no);
+
+            snd.run();
+        }
     }
 
-    if (IS_DESTROYED)
+    if (is_destroyed)
     {
-        if (data_->can_bleed && ALLOW_GORE)
+        if (data_->can_bleed && allow_gore)
         {
             map::mk_gore(pos);
             map::mk_blood(pos);
         }
     }
-    else //Not destroyed
+    else // Not destroyed
     {
         if (!is_player())
         {
             P new_pos;
+
             auto* feature_here = map::cells[pos.x][pos.y].rigid;
 
-            //TODO: this should be decided with a floodfill instead
+            // TODO: this should be decided with a floodfill instead
             if (!feature_here->can_have_corpse())
             {
                 for (int dx = -1; dx <= 1; ++dx)
                 {
                     for (int dy = -1; dy <= 1; ++dy)
                     {
-                        new_pos      = pos + P(dx, dy);
+                        new_pos = pos + P(dx, dy);
                         feature_here = map::cells[pos.x + dx][pos.y + dy].rigid;
 
                         if (feature_here->can_have_corpse())
@@ -888,12 +1240,7 @@ void Actor::die(const bool IS_DESTROYED, const bool ALLOW_GORE, const bool ALLOW
                 }
             }
         }
-
-        glyph_ = '&';
-        tile_ = Tile_id::corpse2;
     }
-
-    clr_ = clr_red_lgt;
 
     on_death();
 
@@ -901,142 +1248,201 @@ void Actor::die(const bool IS_DESTROYED, const bool ALLOW_GORE, const bool ALLOW
 
     if (!is_player())
     {
-        dungeon_master::on_mon_killed(*this);
+        if (allow_drop_items)
+        {
+            item_drop::drop_all_characters_items(*this);
+        }
+
+        game::on_mon_killed(*this);
+
         static_cast<Mon*>(this)->leader_ = nullptr;
     }
 
-    render::draw_map_and_interface();
+    TRACE_FUNC_END_VERBOSE;
+}
+
+void Actor::destroy()
+{
+    state_ = ActorState::destroyed;
+
+    on_destroyed();
 }
 
 std::string Actor::death_msg() const
 {
-    return name_the() + " dies.";
+    const std::string actor_name_the =
+        text_format::first_to_upper(
+            name_the());
+
+    return actor_name_the + " dies.";
 }
 
-Did_action Actor::try_eat_corpse()
+DidAction Actor::try_eat_corpse()
 {
-    const bool IS_PLAYER = is_player();
+    const bool actor_is_player = is_player();
 
-    Prop_wound* wound = nullptr;
+    PropWound* wound = nullptr;
 
-    if (IS_PLAYER)
+    if (actor_is_player)
     {
-        Prop* prop = prop_handler_->prop(Prop_id::wound);
+        Prop* prop = prop_handler_->prop(PropId::wound);
 
         if (prop)
         {
-            wound = static_cast<Prop_wound*>(prop);
+            wound = static_cast<PropWound*>(prop);
         }
     }
 
     if (hp() >= hp_max(true) && !wound)
     {
-        //Not "hungry"
-        if (IS_PLAYER)
-        {
-            msg_log::add("I am satiated.");
-        }
-
-        return Did_action::no;
+        // Not "hungry"
+        return DidAction::no;
     }
 
-    Actor* corpse = utils::actor_at_pos(pos, Actor_state::corpse);
+    Actor* corpse = nullptr;
+
+    // Check all corpses here, if this is the player eating, stop at any corpse
+    // which is prioritized for bashing (Zombies)
+    for (Actor* const actor : game_time::actors)
+    {
+        if ((actor->pos == pos) &&
+            (actor->state() == ActorState::corpse))
+        {
+            corpse = actor;
+
+            if (actor_is_player &&
+                actor->data().prio_corpse_bash)
+            {
+                break;
+            }
+        }
+    }
 
     if (corpse)
     {
-        const int           CORPSE_MAX_HP   = corpse->hp_max(false);
-        const int           DESTR_ONE_IN_N  = utils::constr_in_range(1, CORPSE_MAX_HP / 4, 8);
-        const bool          IS_DESTROYED    = rnd::one_in(DESTR_ONE_IN_N);
-        const std::string   corpse_name     = corpse->corpse_name_the();
+        const int corpse_max_hp = corpse->hp_max(false);
 
-        const Alerts_mon alerts = IS_PLAYER ? Alerts_mon::yes : Alerts_mon::no;
+        const int destr_one_in_n = constr_in_range(1, corpse_max_hp / 4, 8);
+
+        const bool is_destroyed = rnd::one_in(destr_one_in_n);
+
+        const std::string corpse_name_the = corpse->corpse_name_the();
 
         Snd snd("I hear ripping and chewing.",
-                Sfx_id::bite,
-                Ignore_msg_if_origin_seen::yes,
+                SfxId::bite,
+                IgnoreMsgIfOriginSeen::yes,
                 pos,
                 this,
-                Snd_vol::low,
-                alerts,
-                More_prompt_on_msg::no);
+                SndVol::low,
+                AlertsMon::no,
+                MorePromptOnMsg::no);
 
-        snd_emit::run(snd);
+        snd.run();
 
-        if (IS_PLAYER)
+        if (actor_is_player)
         {
-            msg_log::add("I feed on " + corpse_name + ".");
-
-            if (IS_DESTROYED)
-            {
-                msg_log::add("There is nothing left to eat.");
-            }
+            msg_log::add("I feed on " + corpse_name_the + ".");
         }
-        else //Is monster
+        else // Is monster
         {
             if (map::player->can_see_actor(*this))
             {
-                const std::string name = name_the();
+                const std::string actor_name_the =
+                    text_format::first_to_upper(
+                        name_the());
 
-                msg_log::add(name + " feeds on " + corpse_name + ".");
+                msg_log::add(actor_name_the +
+                             " feeds on " +
+                             corpse_name_the +
+                             ".");
             }
         }
 
-        if (IS_DESTROYED)
+        if (is_destroyed)
         {
-            corpse->state_ = Actor_state::destroyed;
+            corpse->destroy();
+
             map::mk_gore(pos);
             map::mk_blood(pos);
         }
 
-        //Heal
+        if (actor_is_player && is_destroyed)
+        {
+            msg_log::add(text_format::first_to_upper(corpse_name_the) +
+                         " is completely devoured.");
+
+            std::vector<Actor*> corpses_here;
+
+            for (auto* const actor : game_time::actors)
+            {
+                if ((actor->pos == pos) &&
+                    (actor->state() == ActorState::corpse))
+                {
+                    corpses_here.push_back(actor);
+                }
+            }
+
+            if (!corpses_here.empty())
+            {
+                msg_log::more_prompt();
+
+                for (auto* const corpse : corpses_here)
+                {
+                    const std::string name =
+                        text_format::first_to_upper(
+                            corpse->corpse_name_a());
+
+                    msg_log::add(name + ".");
+                }
+            }
+        }
+
+        // Heal
         on_feed();
 
-        return Did_action::yes;
-    }
-    else if (IS_PLAYER)
-    {
-        msg_log::add("I find nothing here to feed on.");
+        return DidAction::yes;
     }
 
-    return Did_action::no;
+    return DidAction::no;
 }
 
 void Actor::on_feed()
 {
-    const int HP_RESTORED = rnd::range(3, 6);
+    const int hp_restored = rnd::range(3, 5);
 
-    restore_hp(HP_RESTORED, false, Verbosity::silent);
+    restore_hp(hp_restored, false, Verbosity::silent);
 
     if (is_player())
     {
-        Prop* const prop = prop_handler_->prop(Prop_id::wound);
+        Prop* const prop = prop_handler_->prop(PropId::wound);
 
-        if (prop && rnd::one_in(12))
+        if (prop && rnd::one_in(6))
         {
-            Prop_wound* const wound = static_cast<Prop_wound*>(prop);
+            PropWound* const wound = static_cast<PropWound*>(prop);
 
             wound->heal_one_wound();
         }
     }
 }
 
-void Actor::add_light(bool light_map[MAP_W][MAP_H]) const
+void Actor::add_light(bool light_map[map_w][map_h]) const
 {
-    if (state_ == Actor_state::alive && prop_handler_->has_prop(Prop_id::radiant))
+    if (state_ == ActorState::alive &&
+        prop_handler_->has_prop(PropId::radiant))
     {
-        //TODO: Much of the code below is duplicated from Actor_player::add_light_hook(), some
-        //refactoring is needed.
+        // TODO: Much of the code below is duplicated from
+        // ActorPlayer::add_light_hook(), some refactoring is needed.
 
-        bool hard_blocked[MAP_W][MAP_H];
+        bool hard_blocked[map_w][map_h];
 
-        const Rect fov_lmt = fov::get_fov_rect(pos);
+         const R fov_lmt = fov::get_fov_rect(pos);
 
-        map_parse::run(cell_check::Blocks_los(),
-                       hard_blocked,
-                       Map_parse_mode::overwrite,
-                       fov_lmt);
+        map_parsers::BlocksLos()
+            .run(hard_blocked,
+                 MapParseMode::overwrite,
+                 fov_lmt);
 
-        Los_result fov[MAP_W][MAP_H];
+        LosResult fov[map_w][map_h];
 
         fov::run(pos, hard_blocked, fov);
 
@@ -1051,7 +1457,7 @@ void Actor::add_light(bool light_map[MAP_W][MAP_H]) const
             }
         }
     }
-    else if (prop_handler_->has_prop(Prop_id::burning))
+    else if (prop_handler_->has_prop(PropId::burning))
     {
         for (int dx = -1; dx <= 1; ++dx)
         {

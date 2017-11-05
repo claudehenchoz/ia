@@ -1,17 +1,18 @@
-#ifndef FEATURE_TRAPS_H
-#define FEATURE_TRAPS_H
+#ifndef FEATURE_TRAPS_HPP
+#define FEATURE_TRAPS_HPP
 
 #include "feature.hpp"
 #include "ability_values.hpp"
 #include "art.hpp"
 #include "feature_rigid.hpp"
-#include "cmn_data.hpp"
+#include "global.hpp"
 
-class Trap_impl;
+class TrapImpl;
 
-enum class Trap_id
+enum class TrapId
 {
     blinding,
+    deafening,
     dart,
     gas_confusion,
     gas_fear,
@@ -28,16 +29,20 @@ enum class Trap_id
     any
 };
 
-enum class Trap_placement_valid {no, yes};
+enum class TrapPlacementValid
+{
+    no,
+    yes
+};
 
 class Trap: public Rigid
 {
 public:
-    Trap(const P& feature_pos, const Rigid* const mimic_feature, Trap_id id);
+    Trap(const P& p, Rigid* const mimic_feature, TrapId id);
 
-    //Spawn-by-id compliant ctor (do not use for normal cases):
-    Trap(const P& feature_pos) :
-        Rigid                   (feature_pos),
+    // Spawn-by-id compliant ctor (do not use for normal cases):
+    Trap(const P& p) :
+        Rigid                   (p),
         mimic_feature_          (nullptr),
         is_hidden_              (false),
         nr_turns_until_trigger_ (-1),
@@ -47,14 +52,14 @@ public:
 
     ~Trap();
 
-    Feature_id id() const override
+    FeatureId id() const override
     {
-        return Feature_id::trap;
+        return FeatureId::trap;
     }
 
     bool valid()
     {
-        //This trap is valid if we have succesfully created an implementation
+        // Trap is valid if we have succesfully created an implementation
         return trap_impl_;
     }
 
@@ -62,18 +67,17 @@ public:
 
     char glyph() const override;
 
-    Tile_id tile() const override;
+    TileId tile() const override;
 
     std::string name(const Article article) const override;
 
     void disarm() override;
 
-    void on_new_turn_hook() override;
+    // Quietly destroys the trap, and either places rubble, or replaces it with
+    // the mimic feature (depending on trap type)
+    void destroy();
 
-    bool can_have_corpse() const override
-    {
-        return is_hidden_;
-    }
+    void on_new_turn_hook() override;
 
     bool can_have_blood() const override
     {
@@ -87,20 +91,22 @@ public:
 
     bool is_magical() const;
 
-    void reveal(const bool PRINT_MESSSAGE_WHEN_PLAYER_SEES);
+    void reveal(const Verbosity verbosity) override;
 
     bool is_hidden() const
     {
         return is_hidden_;
     }
 
-    Matl matl() const;
+    Matl matl() const override;
 
     Dir actor_try_leave(Actor& actor, const Dir dir);
 
-    Trap_id trap_type() const;
+    TrapId type() const;
 
-    const Trap_impl* trap_impl() const
+    bool is_holding_actor() const;
+
+    const TrapImpl* trap_impl() const
     {
         return trap_impl_;
     }
@@ -108,44 +114,49 @@ public:
     void player_try_spot_hidden();
 
 private:
-    Trap_impl* mk_trap_impl_from_id(const Trap_id trap_id) const;
+    TrapImpl* mk_trap_impl_from_id(const TrapId trap_id);
 
     Clr clr_default() const override;
     Clr clr_bg_default() const override;
 
-    void on_hit(const Dmg_type dmg_type, const Dmg_method dmg_method,
+    void on_hit(const int dmg,
+                const DmgType dmg_type,
+                const DmgMethod dmg_method,
                 Actor* const actor) override;
 
-    Did_trigger_trap trigger_trap(Actor* const actor) override;
+    DidTriggerTrap trigger_trap(Actor* const actor) override;
 
     void trigger_start(const Actor* actor);
 
-    const Rigid* const mimic_feature_;
+    Rigid* mimic_feature_;
     bool is_hidden_;
     int nr_turns_until_trigger_;
 
-    Trap_impl* trap_impl_;
+    //
+    // TODO: Should be a unique pointer
+    //
+    TrapImpl* trap_impl_;
 };
 
-class Trap_impl
+class TrapImpl
 {
 protected:
     friend class Trap;
-    Trap_impl(P pos, Trap_id trap_type, const Trap* const base_trap) :
-        pos_        (pos),
-        trap_type_  (trap_type),
+    TrapImpl(P p, TrapId type, Trap* const base_trap) :
+        pos_        (p),
+        type_       (type),
         base_trap_  (base_trap) {}
 
-    virtual ~Trap_impl() {}
+    virtual ~TrapImpl() {}
 
-    //Called by the trap feature after picking a random trap implementation.
-    //This allows the specific implementation initialize and to modify the map.
-    //The implementation may report that the placement is impossible
-    //(e.g. no suitable wall to fire a dart from), in which case another
-    //implementation will be picked at random.
-    virtual Trap_placement_valid on_place()
+    // Called by the trap feature after picking a random trap implementation.
+    // This allows the specific implementation initialize and to modify the map.
+    // The implementation may report that the placement is impossible
+    // (e.g. no suitable wall to fire a dart from), in which case another
+    // implementation will be picked at random.
+    virtual TrapPlacementValid on_place()
     {
-        return Trap_placement_valid::yes;
+        return TrapPlacementValid::yes;
     }
 
     virtual Dir actor_try_leave(Actor& actor, const Dir dir)
@@ -154,17 +165,17 @@ protected:
         return dir;
     }
 
-    //NOTE: The trigger may happen several turns after the trap activates, so it's kinds pointless
-    // to provide actor triggering as a parameter here.
+    // NOTE: The trigger may happen several turns after the trap activates, so
+    //       it's pointless to provide actor triggering as a parameter here.
     virtual void trigger() = 0;
 
     virtual Range nr_turns_range_to_trigger() const = 0;
 
-    virtual std::string title() const = 0;
+    virtual std::string name(const Article article) const = 0;
 
     virtual Clr clr() const = 0;
 
-    virtual Tile_id tile() const = 0;
+    virtual TileId tile() const = 0;
 
     virtual char glyph() const
     {
@@ -178,41 +189,36 @@ protected:
         return true;
     }
 
+    virtual bool is_holding_actor() const
+    {
+        return false;
+    }
+
     virtual std::string disarm_msg() const = 0;
 
     virtual std::string disarm_fail_msg() const = 0;
 
     P pos_;
-    Trap_id trap_type_;
+    TrapId type_;
 
     P dart_origin_pos_;
 
-    const Trap* const base_trap_;
+    Trap* const base_trap_;
 };
 
-class Mech_trap_impl : public Trap_impl
+class MechTrapImpl : public TrapImpl
 {
 protected:
     friend class Trap;
 
-    Mech_trap_impl(P pos, Trap_id trap_type, const Trap* const base_trap) :
-        Trap_impl(pos, trap_type, base_trap) {}
+    MechTrapImpl(P pos, TrapId type, Trap* const base_trap) :
+        TrapImpl(pos, type, base_trap) {}
 
-    virtual ~Mech_trap_impl() {}
+    virtual ~MechTrapImpl() {}
 
-    virtual std::string title() const override
+    virtual TileId tile() const override
     {
-        return "Trap";
-    }
-
-    virtual Clr clr() const override
-    {
-        return clr_red_lgt;
-    }
-
-    virtual Tile_id tile() const override
-    {
-        return Tile_id::trap_general;
+        return TileId::trap_general;
     }
 
     bool is_magical() const override
@@ -231,19 +237,168 @@ protected:
     }
 };
 
-class Magic_trap_impl : public Trap_impl
+class TrapDart: public MechTrapImpl
+{
+private:
+    friend class Trap;
+
+    TrapDart(P pos, Trap* const base_trap);
+
+    virtual std::string name(const Article article) const override
+    {
+        std::string name =
+            (article == Article::a) ?
+            "a" :
+            "the";
+
+        name += " dart trap";
+
+        return name;
+    }
+
+    virtual Clr clr() const override
+    {
+        return clr_white;
+    }
+
+    void trigger() override;
+
+    TrapPlacementValid on_place() override;
+
+    Range nr_turns_range_to_trigger() const override
+    {
+        return {2, 3};
+    }
+
+    bool is_poisoned_;
+
+    P dart_origin_;
+
+    bool is_dart_origin_destroyed_;
+};
+
+class TrapSpear: public MechTrapImpl
+{
+private:
+    friend class Trap;
+
+    TrapSpear(P pos, Trap* const base_trap);
+
+    virtual std::string name(const Article article) const override
+    {
+        std::string name =
+            (article == Article::a) ?
+            "a" :
+            "the";
+
+        name += " spear trap";
+
+        return name;
+    }
+
+    virtual Clr clr() const override
+    {
+        return clr_white_lgt;
+    }
+
+    void trigger() override;
+
+    TrapPlacementValid on_place() override;
+
+    Range nr_turns_range_to_trigger() const override
+    {
+        return {2, 3};
+    }
+
+    bool is_poisoned_;
+
+    P spear_origin_;
+
+    bool is_spear_origin_destroyed_;
+};
+
+class GasTrapImpl: public MechTrapImpl
 {
 protected:
     friend class Trap;
 
-    Magic_trap_impl(P pos, Trap_id trap_type, const Trap* const base_trap) :
-        Trap_impl(pos, trap_type, base_trap) {}
+    GasTrapImpl(P pos, TrapId type, Trap* const base_trap) :
+        MechTrapImpl(pos, type, base_trap) {}
 
-    virtual ~Magic_trap_impl() {}
-
-    virtual std::string title() const override
+    virtual std::string name(const Article article) const override
     {
-        return "Strange shape";
+        std::string name =
+            (article == Article::a) ?
+            "a" :
+            "the";
+
+        name += " gas trap";
+
+        return name;
+    }
+
+    virtual Clr clr() const override
+    {
+        return clr_magenta;
+    }
+
+    Range nr_turns_range_to_trigger() const override
+    {
+        return {1, 4};
+    }
+};
+
+class TrapGasConfusion: public GasTrapImpl
+{
+private:
+    friend class Trap;
+
+    TrapGasConfusion(P pos, Trap* const base_trap) :
+        GasTrapImpl(pos, TrapId::gas_confusion, base_trap) {}
+
+    void trigger() override;
+};
+
+class TrapGasParalyzation: public GasTrapImpl
+{
+private:
+    friend class Trap;
+
+    TrapGasParalyzation(P pos, Trap* const base_trap) :
+        GasTrapImpl(pos, TrapId::gas_paralyze, base_trap) {}
+
+    void trigger() override;
+};
+
+class TrapGasFear: public GasTrapImpl
+{
+private:
+    friend class Trap;
+
+    TrapGasFear(P pos, Trap* const base_trap) :
+        GasTrapImpl(pos, TrapId::gas_fear, base_trap) {}
+
+    void trigger() override;
+};
+
+class TrapBlindingFlash: public MechTrapImpl
+{
+private:
+    friend class Trap;
+
+    TrapBlindingFlash(P pos, Trap* const base_trap) :
+        MechTrapImpl(pos, TrapId::blinding, base_trap) {}
+
+    virtual std::string name(const Article article) const override
+    {
+        std::string name =
+            (article == Article::a) ?
+            "a" :
+            "the";
+
+        name += " blinding trap";
+
+        return name;
     }
 
     virtual Clr clr() const override
@@ -251,9 +406,176 @@ protected:
         return clr_yellow;
     }
 
-    virtual Tile_id tile() const override
+    void trigger() override;
+
+    Range nr_turns_range_to_trigger() const override
     {
-        return Tile_id::elder_sign;
+        return {1, 3};
+    }
+};
+
+class TrapDeafening: public MechTrapImpl
+{
+private:
+    friend class Trap;
+
+    TrapDeafening(P pos, Trap* const base_trap) :
+        MechTrapImpl(pos, TrapId::deafening, base_trap) {}
+
+    virtual std::string name(const Article article) const override
+    {
+        std::string name =
+            (article == Article::a) ?
+            "a" :
+            "the";
+
+        name += " deafening trap";
+
+        return name;
+    }
+
+    virtual Clr clr() const override
+    {
+        return clr_violet;
+    }
+
+    void trigger() override;
+
+    Range nr_turns_range_to_trigger() const override
+    {
+        return {1, 3};
+    }
+};
+
+class TrapSmoke: public MechTrapImpl
+{
+private:
+    friend class Trap;
+
+    TrapSmoke(P pos, Trap* const base_trap) :
+        MechTrapImpl(pos, TrapId::smoke, base_trap) {}
+
+    virtual std::string name(const Article article) const override
+    {
+        std::string name =
+            (article == Article::a) ?
+            "a" :
+            "the";
+
+        name += " smoke trap";
+
+        return name;
+    }
+
+    virtual Clr clr() const override
+    {
+        return clr_gray;
+    }
+
+    void trigger() override;
+
+    Range nr_turns_range_to_trigger() const override
+    {
+        return {1, 3};
+    }
+};
+
+class TrapFire: public MechTrapImpl
+{
+private:
+    friend class Trap;
+
+    TrapFire(P pos, Trap* const base_trap) :
+        MechTrapImpl(pos, TrapId::smoke, base_trap) {}
+
+    virtual std::string name(const Article article) const override
+    {
+        std::string name =
+            (article == Article::a) ?
+            "a" :
+            "the";
+
+        name += " fire trap";
+
+        return name;
+    }
+
+    virtual Clr clr() const override
+    {
+        return clr_red_lgt;
+    }
+
+    void trigger() override;
+
+    Range nr_turns_range_to_trigger() const override
+    {
+        return {3, 4};
+    }
+};
+
+class TrapAlarm: public MechTrapImpl
+{
+private:
+    friend class Trap;
+
+    TrapAlarm(P pos, Trap* const base_trap) :
+        MechTrapImpl(pos, TrapId::alarm, base_trap) {}
+
+    virtual std::string name(const Article article) const override
+    {
+        std::string name =
+            (article == Article::a) ?
+            "an" :
+            "the";
+
+        name += " alarm trap";
+
+        return name;
+    }
+
+    virtual Clr clr() const override
+    {
+        return clr_orange;
+    }
+
+    void trigger() override;
+
+    Range nr_turns_range_to_trigger() const override
+    {
+        return {0, 2};
+    }
+};
+
+class MagicTrapImpl : public TrapImpl
+{
+protected:
+    friend class Trap;
+
+    MagicTrapImpl(P pos, TrapId type, Trap* const base_trap) :
+        TrapImpl(pos, type, base_trap) {}
+
+    virtual ~MagicTrapImpl() {}
+
+    virtual std::string name(const Article article) const override
+    {
+        std::string name =
+            (article == Article::a) ?
+            "a" :
+            "the";
+
+        name += " strange shape";
+
+        return name;
+    }
+
+    virtual Clr clr() const override
+    {
+        return clr_red_lgt;
+    }
+
+    virtual TileId tile() const override
+    {
+        return TileId::elder_sign;
     }
 
     bool is_magical() const override
@@ -270,175 +592,6 @@ protected:
     {
         return "I fail to dispel a magic trap.";
     }
-};
-
-class Trap_dart: public Mech_trap_impl
-{
-private:
-    friend class Trap;
-
-    Trap_dart(P pos, const Trap* const base_trap);
-
-    void trigger();
-
-    Trap_placement_valid on_place() override;
-
-    Range nr_turns_range_to_trigger() const override
-    {
-        return {1, 3};
-    }
-
-    bool is_poisoned_;
-
-    P dart_origin_;
-
-    bool is_dart_origin_destroyed_;
-};
-
-class Trap_spear: public Mech_trap_impl
-{
-private:
-    friend class Trap;
-
-    Trap_spear(P pos, const Trap* const base_trap);
-
-    void trigger();
-
-    Trap_placement_valid on_place() override;
-
-    Range nr_turns_range_to_trigger() const override
-    {
-        return {1, 2};
-    }
-
-    bool is_poisoned_;
-
-    P spear_origin_;
-
-    bool is_spear_origin_destroyed_;
-};
-
-class Trap_gas_confusion: public Mech_trap_impl
-{
-private:
-    friend class Trap;
-
-    Trap_gas_confusion(P pos, const Trap* const base_trap) :
-        Mech_trap_impl(pos, Trap_id::gas_confusion, base_trap) {}
-
-    void trigger();
-
-    Range nr_turns_range_to_trigger() const override
-    {
-        return {1, 4};
-    }
-};
-
-class Trap_gas_paralyzation: public Mech_trap_impl
-{
-private:
-    friend class Trap;
-
-    Trap_gas_paralyzation(P pos, const Trap* const base_trap) :
-        Mech_trap_impl(pos, Trap_id::gas_paralyze, base_trap) {}
-
-    void trigger();
-
-    Range nr_turns_range_to_trigger() const override
-    {
-        return {1, 4};
-    }
-};
-
-class Trap_gas_fear: public Mech_trap_impl
-{
-private:
-    friend class Trap;
-
-    Trap_gas_fear(P pos, const Trap* const base_trap) :
-        Mech_trap_impl(pos, Trap_id::gas_fear, base_trap) {}
-
-    void trigger();
-
-    Range nr_turns_range_to_trigger() const override
-    {
-        return {1, 4};
-    }
-};
-
-class Trap_blinding_flash: public Mech_trap_impl
-{
-private:
-    friend class Trap;
-
-    Trap_blinding_flash(P pos, const Trap* const base_trap) :
-        Mech_trap_impl(pos, Trap_id::blinding, base_trap) {}
-
-    void trigger();
-
-    Range nr_turns_range_to_trigger() const override
-    {
-        return {1, 3};
-    }
-};
-
-class Trap_smoke: public Mech_trap_impl
-{
-private:
-    friend class Trap;
-
-    Trap_smoke(P pos, const Trap* const base_trap) :
-        Mech_trap_impl(pos, Trap_id::smoke, base_trap) {}
-
-    void trigger();
-
-    Range nr_turns_range_to_trigger() const override
-    {
-        return {1, 3};
-    }
-};
-
-class Trap_fire: public Mech_trap_impl
-{
-private:
-    friend class Trap;
-
-    Trap_fire(P pos, const Trap* const base_trap) :
-        Mech_trap_impl(pos, Trap_id::smoke, base_trap) {}
-
-    void trigger();
-
-    Range nr_turns_range_to_trigger() const override
-    {
-        return {3, 4};
-    }
-};
-
-class Trap_alarm: public Mech_trap_impl
-{
-private:
-    friend class Trap;
-
-    Trap_alarm(P pos, const Trap* const base_trap) :
-        Mech_trap_impl(pos, Trap_id::alarm, base_trap) {}
-
-    void trigger();
-
-    Range nr_turns_range_to_trigger() const override
-    {
-        return {0, 2};
-    }
-};
-
-class Trap_teleport: public Magic_trap_impl
-{
-private:
-    friend class Trap;
-
-    Trap_teleport(P pos, const Trap* const base_trap) :
-        Magic_trap_impl(pos, Trap_id::teleport, base_trap) {}
-
-    void trigger();
 
     Range nr_turns_range_to_trigger() const override
     {
@@ -446,44 +599,45 @@ private:
     }
 };
 
-class Trap_summon_mon: public Magic_trap_impl
+class TrapTeleport: public MagicTrapImpl
 {
 private:
     friend class Trap;
 
-    Trap_summon_mon(P pos, const Trap* const base_trap) :
-        Magic_trap_impl(pos, Trap_id::summon, base_trap) {}
+    TrapTeleport(P pos, Trap* const base_trap) :
+        MagicTrapImpl(pos, TrapId::teleport, base_trap) {}
 
-    void trigger();
-
-    Range nr_turns_range_to_trigger() const override
-    {
-        return {0, 0};
-    }
+    void trigger() override;
 };
 
-class Trap_spi_drain: public Magic_trap_impl
+class TrapSummonMon: public MagicTrapImpl
 {
 private:
     friend class Trap;
 
-    Trap_spi_drain(P pos, const Trap* const base_trap) :
-        Magic_trap_impl(pos, Trap_id::summon, base_trap) {}
+    TrapSummonMon(P pos, Trap* const base_trap) :
+        MagicTrapImpl(pos, TrapId::summon, base_trap) {}
 
-    void trigger();
-
-    Range nr_turns_range_to_trigger() const override
-    {
-        return {0, 0};
-    }
+    void trigger() override;
 };
 
-class Trap_web: public Mech_trap_impl
+class TrapSpiDrain: public MagicTrapImpl
+{
+private:
+    friend class Trap;
+
+    TrapSpiDrain(P pos, Trap* const base_trap) :
+        MagicTrapImpl(pos, TrapId::summon, base_trap) {}
+
+    void trigger() override;
+};
+
+class TrapWeb: public MechTrapImpl
 {
 public:
-    Dir actor_try_leave(Actor& actor, const Dir dir);
+    Dir actor_try_leave(Actor& actor, const Dir dir) override;
 
-    bool is_holding() const
+    bool is_holding_actor() const override
     {
         return is_holding_actor_;
     }
@@ -491,20 +645,27 @@ public:
 private:
     friend class Trap;
 
-    Trap_web(P pos, const Trap* const base_trap) :
-        Mech_trap_impl      (pos, Trap_id::web, base_trap),
+    TrapWeb(P pos, Trap* const base_trap) :
+        MechTrapImpl      (pos, TrapId::web, base_trap),
         is_holding_actor_   (false) {}
 
-    void trigger();
+    void trigger() override;
 
     Clr clr() const override
     {
-        return clr_white_high;
+        return clr_white_lgt;
     }
 
-    std::string title() const override
+    std::string name(const Article article) const override
     {
-        return "Spider web";
+        std::string name =
+            (article == Article::a) ?
+            "a" :
+            "the";
+
+        name += " spider web";
+
+        return name;
     }
 
     char glyph() const override
@@ -522,9 +683,9 @@ private:
         return false;
     }
 
-    Tile_id tile() const override
+    TileId tile() const override
     {
-        return Tile_id::web;
+        return TileId::web;
     }
 
     std::string disarm_msg() const override
@@ -540,4 +701,4 @@ private:
     bool is_holding_actor_;
 };
 
-#endif
+#endif // FEATURE_TRAPS_HPP

@@ -1,25 +1,50 @@
-#ifndef MAP_TRAVEL_H
-#define MAP_TRAVEL_H
+#ifndef MAP_TRAVEL_HPP
+#define MAP_TRAVEL_HPP
 
 #include <vector>
 #include <string>
 
 #include "map.hpp"
 
-//This includes forest intro level, rats in the walls level, etc (every level that
-//increments the DLVL number).
-enum Is_main_dungeon {no, yes};
-
-struct map_data
+// This includes forest intro level, rats in the walls level, etc (every level
+// that increments the dlvl number).
+enum class IsMainDungeon
 {
-    Map_type        type;
-    Is_main_dungeon is_main_dungeon;
+    no,
+    yes
+};
+
+enum class AllowSpawnMonOverTime
+{
+    no,
+    yes
+};
+
+struct MapData
+{
+    MapData(MapType type ,
+            IsMainDungeon is_main_dungeon,
+            AllowSpawnMonOverTime allow_spawn_mon_over_time) :
+        type                        (type),
+        is_main_dungeon             (is_main_dungeon),
+        allow_spawn_mon_over_time   (allow_spawn_mon_over_time) {}
+
+    MapData() :
+        type                        (MapType::std),
+        is_main_dungeon             (IsMainDungeon::yes),
+        allow_spawn_mon_over_time   (AllowSpawnMonOverTime::yes) {}
+
+    MapType type;
+
+    IsMainDungeon is_main_dungeon;
+
+    AllowSpawnMonOverTime allow_spawn_mon_over_time;
 };
 
 namespace map_travel
 {
 
-extern std::vector<map_data> map_list;
+extern std::vector<MapData> map_list;
 
 void init();
 
@@ -30,8 +55,8 @@ void try_use_down_stairs();
 
 void go_to_nxt();
 
-Map_type map_type();
+MapData current_map_data();
 
-} //map_travel
+} // map_travel
 
 #endif

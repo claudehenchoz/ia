@@ -1,36 +1,33 @@
-#ifndef PLAYER_BON_H
-#define PLAYER_BON_H
+#ifndef PLAYER_BON_HPP
+#define PLAYER_BON_HPP
 
 #include <string>
 #include <vector>
 #include <algorithm>
-
-#include "ability_values.hpp"
-#include "converters.hpp"
-
 #include <math.h>
 
-struct Actor_data_t;
+#include "global.hpp"
+
+struct ActorDataT;
 
 enum class Trait
 {
-    //Common (except some traits can be blocked for certain backgrounds)
+    // Common (except some traits can be blocked for certain backgrounds)
     adept_melee_fighter,
     expert_melee_fighter,
     master_melee_fighter,
     adept_marksman,
     expert_marksman,
+    master_marksman,
     cool_headed,
-    dem_expert,
+    courageous,
     dexterous,
     fearless,
-    imperceptible,
-    vicious,
     stealthy,
+    imperceptible,
+    silent,
     mobile,
     lithe,
-    observant,
-    perceptive,
     vigilant,
     treasure_hunter,
     self_aware,
@@ -41,30 +38,40 @@ enum class Trait
     stout_spirit,
     strong_spirit,
     mighty_spirit,
+    // magically_gifted,
     tough,
     rugged,
-    unbreakable,
+    thick_skinned,
+    resistant,
     strong_backed,
     undead_bane,
+    elec_incl,
 
-    //Unique for Ghoul
+    // Unique for Ghoul
     ravenous,
     foul,
     toxic,
     indomitable_fury,
 
-    //Unique for Occultist
-    warlock,
-    summoner,
-    blood_sorcerer,
-    seer,
+    // Unique for Occultist
+    lesser_invoc,
+    greater_invoc,
+    lesser_summoning,
+    greater_summoning,
+    lesser_clairv,
+    greater_clairv,
+    lesser_ench,
+    greater_ench,
+    lesser_alter,
+    greater_alter,
+    blood_sorc,
+    absorb,
 
-    //Unique for Rogue
+    // Unique for Rogue
+    vicious,
 
-    //Unique for War veteran
-    master_marksman,
+    // Unique for War veteran
     fast_shooter,
-    courageous,
     steady_aimer,
     sharpshooter,
 
@@ -83,7 +90,7 @@ enum class Bg
 namespace player_bon
 {
 
-extern bool traits[int(Trait::END)];
+extern bool traits[(size_t)Trait::END];
 
 void init();
 
@@ -91,26 +98,33 @@ void save();
 
 void load();
 
-void pickable_bgs(std::vector<Bg>& bgs_ref);
+std::vector<Bg> pickable_bgs();
 
-void pickable_traits(const Bg bg, std::vector<Trait>& traits_ref);
+void unpicked_traits_for_bg(const Bg bg,
+                            std::vector<Trait>& traits_can_be_picked_out,
+                            std::vector<Trait>& traits_prereqs_not_met_out);
 
 void trait_prereqs(const Trait id,
                    const Bg bg,
-                   std::vector<Trait>& traits_ref,
-                   Bg& bg_ref);
+                   std::vector<Trait>& traits_out,
+                   Bg& bg_out,
+                   int& clvl_out);
 
 Bg bg();
+
+bool has_trait(const Trait id);
 
 std::string trait_title(const Trait id);
 std::string trait_descr(const Trait id);
 
 std::string bg_title(const Bg id);
 
-//NOTE: The string vector reference parameter set in this function is not formatted in
-//bg_descr. Each line still needs to be formatted by the calling function. The reason
-//for using a vector reference instead of simply a string is only to specify line breaks.
-void bg_descr(const Bg id, std::vector<std::string>& out);
+//
+// NOTE: The string vector returned is not formatted. Each line still needs to
+//       be formatted by the caller. The reason for using a vector instead of a
+//       string is to separate the text into paragraphs.
+//
+std::vector<StrAndClr> bg_descr(const Bg id);
 
 std::string all_picked_traits_titles_line();
 
@@ -120,10 +134,8 @@ void pick_bg(const Bg bg);
 
 void set_all_traits_to_picked();
 
-int spi_occultist_can_cast_at_lvl(const int LVL);
+bool gets_undead_bane_bon(const ActorDataT& actor_data);
 
-bool gets_undead_bane_bon(const Actor_data_t& actor_data);
+} // player_bon
 
-} //player_bon
-
-#endif
+#endif // PLAYER_BON_HPP

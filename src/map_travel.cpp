@@ -9,39 +9,40 @@
 #endif // NDEBUG
 
 #include "map.hpp"
-#include "map_gen.hpp"
+#include "mapgen.hpp"
 #include "populate_items.hpp"
-#include "render.hpp"
+#include "io.hpp"
 #include "msg_log.hpp"
 #include "feature_rigid.hpp"
-#include "utils.hpp"
-#include "save_handling.hpp"
+#include "saving.hpp"
 
 namespace map_travel
 {
 
-std::vector<map_data> map_list;
+std::vector<MapData> map_list;
 
 namespace
 {
 
-void mk_lvl(const Map_type& map_type)
+void mk_lvl(const MapType& map_type)
 {
     TRACE_FUNC_BEGIN;
 
-    bool is_lvl_built = false;
+    bool map_ok = false;
 
 #ifndef NDEBUG
-    int   nr_attempts  = 0;
-    auto  start_time   = std::chrono::steady_clock::now();
+    int nr_attempts = 0;
+    auto start_time = std::chrono::steady_clock::now();
 #endif
 
-    //TODO: When the map is invalid, any unique items spawned are lost forever.
-    //Currently, the only effect of this should be that slightly fewever unique items
-    //are found by the player.
-    //It is bad design and should be fixed (but "good enough" for v17.0).
+    //
+    // TODO: When the map is invalid, any unique items spawned are lost forever.
+    //       Currently, the only effect of this should be that slightly fewever
+    //       unique items are found by the player. It is bad design however, and
+    //       should be fixed.
+    //
 
-    while (!is_lvl_built)
+    while (!map_ok)
     {
 #ifndef NDEBUG
         ++nr_attempts;
@@ -49,97 +50,138 @@ void mk_lvl(const Map_type& map_type)
 
         switch (map_type)
         {
-        case Map_type::intro:
-            is_lvl_built = map_gen::mk_intro_lvl();
+        case MapType::intro:
+            map_ok = mapgen::mk_intro_lvl();
             break;
 
-        case Map_type::std:
-            is_lvl_built = map_gen::mk_std_lvl();
+        case MapType::std:
+            map_ok = mapgen::mk_std_lvl();
             break;
 
-        case Map_type::egypt:
-            is_lvl_built = map_gen::mk_egypt_lvl();
+        case MapType::egypt:
+            map_ok = mapgen::mk_egypt_lvl();
             break;
 
-        case Map_type::leng:
-            is_lvl_built = map_gen::mk_leng_lvl();
+        case MapType::leng:
+            map_ok = mapgen::mk_leng_lvl();
             break;
 
-        case Map_type::rats_in_the_walls:
-            is_lvl_built = map_gen::mk_rats_in_the_walls_lvl();
+        case MapType::rat_cave:
+            map_ok = mapgen::mk_rat_cave_level();
             break;
 
-        case Map_type::trapez:
-            is_lvl_built = map_gen::mk_trapez_lvl();
+        case MapType::trapez:
+            map_ok = mapgen::mk_trapez_lvl();
             break;
 
-        case Map_type::boss:
-            is_lvl_built = map_gen::mk_boss_lvl();
+        case MapType::boss:
+            map_ok = mapgen::mk_boss_lvl();
             break;
+        }
+
+        if (map_ok)
+        {
+            map_templates::on_map_ok();
+        }
+        else // The map is invalid
+        {
+            map_templates::on_map_discarded();
         }
     }
 
 #ifndef NDEBUG
     auto diff_time = std::chrono::steady_clock::now() - start_time;
 
-    TRACE << "map built after   " << nr_attempts << " attempt(s). " << std::endl
-          << "Total time taken: "
-          << std::chrono::duration<double, std::milli>(diff_time).count() << " ms" << std::endl;
+    const double duration =
+        std::chrono::duration<double, std::milli>(diff_time).count();
+
+    TRACE << "Map built after " << nr_attempts << " attempt(s). " << std::endl
+          << "Total time taken: " <<  duration << " ms" << std::endl;
 #endif
 
     TRACE_FUNC_END;
 }
 
-} //namespace
+} // namespace
 
 void init()
 {
-    //Forest + dungeon + boss + trapezohedron
-    const size_t NR_LVL_TOT = DLVL_LAST + 3;
+    // Forest + dungeon + boss + trapezohedron
+    const size_t nr_lvl_tot = dlvl_last + 3;
 
-    map_list = std::vector<map_data>(NR_LVL_TOT, {Map_type::std, Is_main_dungeon::yes});
-
-    //Forest intro level
-    map_list[0] = {Map_type::intro, Is_main_dungeon::yes};
-
-    //Occasionally set rats-in-the-walls level as intro to first late game level
-    if (rnd::one_in(3))
+    const MapData default_map_data =
     {
-        map_list[DLVL_FIRST_LATE_GAME - 1] =
+        MapType::std,
+        IsMainDungeon::yes,
+        AllowSpawnMonOverTime::yes
+    };
+
+    map_list = std::vector<MapData>(nr_lvl_tot, default_map_data);
+
+    // Forest intro level
+    map_list[0] =
+    {
+        MapType::intro,
+        IsMainDungeon::yes,
+        AllowSpawnMonOverTime::no
+    };
+
+    // Occasionally set rats-in-the-walls level as intro to late game
+    if (rnd::one_in(5))
+    {
+        map_list[dlvl_first_late_game - 1] =
         {
-          Map_type::rats_in_the_walls,
-          Is_main_dungeon::yes
+            MapType::rat_cave,
+            IsMainDungeon::yes,
+            AllowSpawnMonOverTime::no
         };
     }
 
-    //"Pharaoh chamber" is the first late game level
-    map_list[DLVL_FIRST_LATE_GAME] = {Map_type::egypt, Is_main_dungeon::yes};
+    // "Pharaoh chamber" is the first late game level
+    map_list[dlvl_first_late_game] =
+    {
+        MapType::egypt,
+        IsMainDungeon::yes,
+        AllowSpawnMonOverTime::no
+    };
 
-    map_list[DLVL_LAST + 1] = {Map_type::boss,           Is_main_dungeon::yes};
-    map_list[DLVL_LAST + 2] = {Map_type::trapez,  Is_main_dungeon::yes};
+    map_list[dlvl_last + 1] =
+    {
+        MapType::boss,
+        IsMainDungeon::yes,
+        AllowSpawnMonOverTime::no
+    };
+
+    map_list[dlvl_last + 2] =
+    {
+        MapType::trapez,
+        IsMainDungeon::yes,
+        AllowSpawnMonOverTime::no
+    };
 }
 
 void save()
 {
-    save_handling::put_int(map_list.size());
+    saving::put_int(map_list.size());
 
     for (const auto& map_data : map_list)
     {
-        save_handling::put_int(int(map_data.type));
-        save_handling::put_int(int(map_data.is_main_dungeon));
+        saving::put_int(int(map_data.type));
+        saving::put_int(int(map_data.is_main_dungeon));
     }
 }
 
 void load()
 {
-    const int NR_MAPS = save_handling::get_int();
+    const int nr_maps = saving::get_int();
 
-    map_list.resize(size_t(NR_MAPS));
+    map_list.resize(size_t(nr_maps));
 
     for (auto& map_data : map_list)
     {
-        map_data.type               = Map_type(save_handling::get_int());
-        map_data.is_main_dungeon    = Is_main_dungeon(save_handling::get_int());
+        map_data.type = MapType(saving::get_int());
+
+        map_data.is_main_dungeon = IsMainDungeon(saving::get_int());
     }
 }
 
@@ -151,51 +193,78 @@ void go_to_nxt()
 
     const auto& map_data = map_list.front();
 
-    if (map_data.is_main_dungeon == Is_main_dungeon::yes)
+    if (map_data.is_main_dungeon == IsMainDungeon::yes)
     {
         ++map::dlvl;
     }
 
     mk_lvl(map_data.type);
 
-    map::player->prop_handler().end_prop(Prop_id::descend, false);
+    if (map::player->has_prop(PropId::descend))
+    {
+        msg_log::add("My sinking feeling disappears.");
+
+        map::player->prop_handler().end_prop(PropId::descend, false);
+    }
 
     game_time::is_magic_descend_nxt_std_turn = false;
 
+    map::player->tgt_ = nullptr;
+
+    map::update_vision();
+
     map::player->restore_shock(999, true);
 
-    map::player->tgt_ = nullptr;
-    game_time::update_light_map();
-    map::player->update_fov();
-    map::player->update_clr();
-    render::draw_map_and_interface();
+    msg_log::add("I have discovered a new area.");
 
-    if (map_data.is_main_dungeon == Is_main_dungeon::yes && map::dlvl == DLVL_LAST - 1)
+    //
+    // NOTE: When the "intro level" is skipped, "go_to_nxt" is called when the
+    //       game starts - so no XP is missed in that case (same thing when
+    //       loading the game)
+    //
+    game::incr_player_xp(5, Verbosity::verbose);
+
+    map::player->on_new_dlvl_reached();
+
+    game::add_history_event("Reached dungeon level " +
+                            std::to_string(map::dlvl));
+
+    if ((map_data.is_main_dungeon == IsMainDungeon::yes) &&
+        (map::dlvl == (dlvl_last + 1)))
     {
-        msg_log::add("An ominous voice thunders in my ears.",
-                     clr_white,
-                     false,
-                     More_prompt_on_msg::yes);
-
-        audio::play(Sfx_id::boss_voice2);
+        audio::play(SfxId::boss_voice1);
+    }
+    else // Not the boss level
+    {
+        audio::try_play_amb(1);
     }
 
-    audio::try_play_amb(1);
-
-    if (insanity::has_sympt(Ins_sympt_id::phobia_deep))
+    // Trigger phobia of deep places when descending
+    if (insanity::has_sympt(InsSymptId::phobia_deep))
     {
         msg_log::add("I am plagued by my phobia of deep places!");
 
-        map::player->prop_handler().try_add(new Prop_terrified(Prop_turns::std));
+        map::player->prop_handler().apply(
+            new PropTerrified(PropTurns::std));
+
         return;
+    }
+
+    // Trigger babbling when descending
+    for (const auto* const sympt : insanity::active_sympts())
+    {
+        if (sympt->id() == InsSymptId::babbling)
+        {
+            static_cast<const InsBabbling*>(sympt)->babble();
+        }
     }
 
     TRACE_FUNC_END;
 }
 
-Map_type map_type()
+MapData current_map_data()
 {
-    return map_list.front().type;
+    return map_list.front();
 }
 
-} //map_travel
+} // map_travel

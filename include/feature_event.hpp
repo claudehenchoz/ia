@@ -1,5 +1,5 @@
-#ifndef FEATURE_EVENT_H
-#define FEATURE_EVENT_H
+#ifndef FEATURE_EVENT_HPP
+#define FEATURE_EVENT_HPP
 
 #include <vector>
 
@@ -27,20 +27,20 @@ protected:
     Event(const P&);
 };
 
-class Event_wall_crumble: public Event
+class EventWallCrumble: public Event
 {
 public:
-    Event_wall_crumble(const P& p, std::vector<P>& walls, std::vector<P>& inner);
+    EventWallCrumble(const P& p, std::vector<P>& walls, std::vector<P>& inner);
 
     //Spawn-by-id compliant ctor (do not use for normal cases):
-    Event_wall_crumble(const P& p) :
+    EventWallCrumble(const P& p) :
         Event(p) {}
 
-    ~Event_wall_crumble() {}
+    ~EventWallCrumble() {}
 
-    Feature_id id() const override
+    FeatureId id() const override
     {
-        return Feature_id::event_wall_crumble;
+        return FeatureId::event_wall_crumble;
     }
 
     void on_new_turn() override;
@@ -50,20 +50,20 @@ private:
     std::vector<P> inner_cells_;
 };
 
-class Event_snake_emerge: public Event
+class EventSnakeEmerge: public Event
 {
 public:
-    Event_snake_emerge();
+    EventSnakeEmerge();
 
     //Spawn-by-id compliant ctor (do not use for normal cases):
-    Event_snake_emerge(const P& p) :
+    EventSnakeEmerge(const P& p) :
         Event(p) {}
 
-    ~Event_snake_emerge() {}
+    ~EventSnakeEmerge() {}
 
-    Feature_id id() const override
+    FeatureId id() const override
     {
-        return Feature_id::event_snake_emerge;
+        return FeatureId::event_snake_emerge;
     }
 
     bool try_find_p();
@@ -71,27 +71,27 @@ public:
     void on_new_turn() override;
 
 private:
-    Rect allowed_emerge_rect(const P& p) const;
+    R allowed_emerge_rect(const P& p) const;
 
     bool is_ok_feature_at(const P& p) const;
 
-    void blocked_cells(const Rect& r, bool out[MAP_W][MAP_H]) const;
+    void blocked_cells(const R& r, bool out[map_w][map_h]) const;
 
-    void emerge_p_bucket(const P& p, bool blocked[MAP_W][MAP_H], std::vector<P>& out) const;
+    void emerge_p_bucket(const P& p, bool blocked[map_w][map_h], std::vector<P>& out) const;
 
-    const Range allowed_emerge_dist_range = Range(2, FOV_STD_RADI_INT - 1);
+    const Range allowed_emerge_dist_range = Range(2, fov_std_radi_int - 1);
 
-    const size_t MIN_NR_SNAKES_ = 3;
+    const size_t min_nr_snakes_ = 3;
 };
 
-class Event_rats_in_the_walls_discovery: public Event
+class EventRatsInTheWallsDiscovery: public Event
 {
 public:
-    Event_rats_in_the_walls_discovery(const P& feature_pos);
+    EventRatsInTheWallsDiscovery(const P& feature_pos);
 
-    Feature_id id() const override
+    FeatureId id() const override
     {
-        return Feature_id::event_rats_in_the_walls_discovery;
+        return FeatureId::event_rat_cave_discovery;
     }
 
     void on_new_turn() override;

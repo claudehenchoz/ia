@@ -4,166 +4,232 @@
 
 #include "player_bon.hpp"
 #include "actor_player.hpp"
-#include "render.hpp"
+#include "io.hpp"
 #include "text_format.hpp"
-#include "input.hpp"
 #include "item_potion.hpp"
 #include "item_scroll.hpp"
 #include "item_factory.hpp"
 #include "item.hpp"
 #include "map.hpp"
-#include "dungeon_master.hpp"
-
-namespace character_descr
-{
+#include "game.hpp"
 
 namespace
 {
 
-std::vector<Str_and_clr> lines_;
+const int max_nr_lines_on_scr = screen_h - 2;
 
-void mk_lines()
+} // namespace
+
+StateId CharacterDescr::id()
+{
+    return StateId::descript;
+}
+
+void CharacterDescr::on_start()
 {
     lines_.clear();
 
-    const std::string   offset          = "   ";
-    const Clr&          clr_heading     = clr_white_high;
-    const Clr&          clr_text        = clr_white;
-    const Clr&          clr_text_dark   = clr_gray;
+    const std::string offset = "   ";
 
-    lines_.push_back({"History of " + map::player->name_the(), clr_heading});
+    const int max_w_descr = (map_w * 3) / 4;
 
-    const std::vector<History_event>& events = dungeon_master::history();
+    const Clr& clr_heading = clr_white_lgt;
 
-    for (const auto& event : events)
+    const Clr& clr_text = clr_white;
+
+    const Clr& clr_text_dark = clr_gray;
+
+    lines_.push_back(StrAndClr("Current properties", clr_heading));
+
+    const auto prop_list = map::player->prop_handler().props_list();
+
+    if (prop_list.empty())
     {
-        std::string ev_str = to_str(event.TURN);
+        lines_.push_back(
+            StrAndClr(offset + "None",
+                      clr_text));
 
-        const int TURN_STR_MAX_W = 10;
+        lines_.push_back(StrAndClr("", clr_text));
+    }
+    else // Has properties
+    {
+        for (const auto& e : prop_list)
+        {
+            const auto& title = e.title;
 
-        text_format::pad_before_to(ev_str, TURN_STR_MAX_W);
+            lines_.push_back(
+                StrAndClr(offset + title.str,
+                          title.clr));
 
-        ev_str += ": " + event.msg;
+            const auto descr_formatted =
+                text_format::split(e.descr,
+                                   max_w_descr);
 
-        lines_.push_back({offset + ev_str, clr_text});
+            for (const auto& descr_line : descr_formatted)
+            {
+                lines_.push_back(
+                    StrAndClr(offset + descr_line,
+                              clr_text_dark));
+            }
+
+            lines_.push_back(StrAndClr("", clr_text));
+        }
     }
 
-    lines_.push_back({"", clr_text});
+    lines_.push_back(
+        StrAndClr("Mental disorders",
+                  clr_heading));
 
-    const Ability_vals& abilities = map::player->data().ability_vals;
-
-    lines_.push_back({"Combat skills", clr_heading});
-
-    const int BASE_MELEE =
-        std::min(100, abilities.val(Ability_id::melee, true, *(map::player)));
-
-    const int BASE_RANGED =
-        std::min(100, abilities.val(Ability_id::ranged, true, *(map::player)));
-
-    const int BASE_DODGE_ATTACKS =
-        std::min(100, abilities.val(Ability_id::dodge_att, true, *(map::player)));
-
-    lines_.push_back({offset + "Melee    " + to_str(BASE_MELEE)         + "%", clr_text});
-    lines_.push_back({offset + "Ranged   " + to_str(BASE_RANGED)        + "%", clr_text});
-    lines_.push_back({offset + "Dodging  " + to_str(BASE_DODGE_ATTACKS) + "%", clr_text});
-
-    lines_.push_back({"", clr_text});
-
-    lines_.push_back({"Mental disorders", clr_heading});
-
-    const std::vector<const Ins_sympt*> sympts = insanity::active_sympts();
+    const std::vector<const InsSympt*> sympts = insanity::active_sympts();
 
     if (sympts.empty())
     {
-        lines_.push_back({offset + "None", clr_text});
+        lines_.push_back(
+            StrAndClr(offset + "None",
+                      clr_text));
     }
     else // Has insanity symptoms
     {
-        for (const Ins_sympt* const sympt : sympts)
+        for (const InsSympt* const sympt : sympts)
         {
             const std::string sympt_descr = sympt->char_descr_msg();
 
             if (!sympt_descr.empty())
             {
-                lines_.push_back({offset + sympt_descr, clr_text});
+                lines_.push_back(
+                    StrAndClr(offset + sympt_descr, clr_text));
             }
         }
     }
 
-    lines_.push_back({"", clr_text});
+    lines_.push_back(StrAndClr("", clr_text));
 
-    lines_.push_back({"Potion knowledge", clr_heading});
-    std::vector<Str_and_clr> potion_list;
-    std::vector<Str_and_clr> manuscript_list;
+    lines_.push_back(
+        StrAndClr("Potion knowledge",
+                  clr_heading));
 
-    for (int i = 0; i < int(Item_id::END); ++i)
+    std::vector<StrAndClr> potion_list;
+    std::vector<StrAndClr> manuscript_list;
+
+    for (int i = 0; i < (int)ItemId::END; ++i)
     {
-        const Item_data_t& d = item_data::data[i];
+        const ItemDataT& d = item_data::data[i];
 
         if (d.is_tried || d.is_identified)
         {
-            if (d.type == Item_type::potion)
+            if (d.type == ItemType::potion)
             {
                 Item* item = item_factory::mk(d.id);
 
-                const std::string name = item->name(Item_ref_type::plain);
+                const std::string name = item->name(ItemRefType::plain);
 
-                potion_list.push_back({offset + name, d.clr});
+                potion_list.push_back(
+                    StrAndClr(offset + name,
+                              d.clr));
 
                 delete item;
             }
-            else if (d.type == Item_type::scroll)
+            else if (d.type == ItemType::scroll)
             {
                 Item* item = item_factory::mk(d.id);
 
-                const std::string name = item->name(Item_ref_type::plain);
+                const std::string name = item->name(ItemRefType::plain);
 
-                manuscript_list.push_back(Str_and_clr(offset + name, item->interface_clr()));
+                manuscript_list.push_back(
+                    StrAndClr(offset + name, item->interface_clr()));
 
                 delete item;
             }
         }
     }
 
-    auto str_and_clr_sort = [](const Str_and_clr & e1, const Str_and_clr & e2)
+    auto str_and_clr_sort = [](const StrAndClr & e1, const StrAndClr & e2)
     {
         return e1.str < e2.str;
     };
 
     if (potion_list.empty())
     {
-        lines_.push_back({offset + "No known potions", clr_text});
+        lines_.push_back(
+            StrAndClr(offset + "No known potions",
+                      clr_text));
     }
     else
     {
-        sort(potion_list.begin(), potion_list.end(), str_and_clr_sort);
+        sort(potion_list.begin(),
+             potion_list.end(),
+             str_and_clr_sort);
 
-        for (Str_and_clr& e : potion_list) {lines_.push_back(e);}
+        for (StrAndClr& e : potion_list)
+        {
+            lines_.push_back(e);
+        }
     }
 
-    lines_.push_back({"", clr_text});
+    lines_.push_back(StrAndClr("", clr_text));
 
 
-    lines_.push_back({"Manuscript knowledge", clr_heading});
+    lines_.push_back(
+        StrAndClr("Manuscript knowledge",
+                  clr_heading));
 
-    if (manuscript_list.size() == 0)
+    if (manuscript_list.empty())
     {
-        lines_.push_back({offset + "No known manuscripts", clr_text});
+        lines_.push_back(
+            StrAndClr(offset + "No known manuscripts",
+                      clr_text));
     }
     else
     {
-        sort(manuscript_list.begin(), manuscript_list.end(), str_and_clr_sort);
+        sort(manuscript_list.begin(),
+             manuscript_list.end(),
+             str_and_clr_sort);
 
-        for (Str_and_clr& e : manuscript_list) {lines_.push_back(e);}
+        for (StrAndClr& e : manuscript_list)
+        {
+            lines_.push_back(e);
+        }
     }
 
-    lines_.push_back({"", clr_text});
+    lines_.push_back(StrAndClr("", clr_text));
 
-    lines_.push_back({"Traits gained", clr_heading});
+    lines_.push_back(
+        StrAndClr("History of " + map::player->name_the(),
+                  clr_heading));
 
-    const int MAX_W_DESCR = (MAP_W * 2) / 3;
+    const std::vector<HistoryEvent>& events = game::history();
 
-    for (int i = 0; i < int(Trait::END); ++i)
+    int longest_turn_w = 0;
+
+    for (const auto& event : events)
+    {
+        const int turn_w = std::to_string(event.turn).size();
+
+        longest_turn_w = std::max(turn_w, longest_turn_w);
+    }
+
+    for (const auto& event : events)
+    {
+        std::string ev_str = std::to_string(event.turn);
+
+        const int turn_w = ev_str.size();
+
+        ev_str.append(longest_turn_w - turn_w, ' ');
+
+        ev_str += " " + event.msg;
+
+        lines_.push_back(
+            StrAndClr(offset + ev_str,
+                      clr_text));
+    }
+
+    lines_.push_back(StrAndClr("", clr_text));
+
+    lines_.push_back(
+        StrAndClr("Traits gained",
+                  clr_heading));
+
+    for (size_t i = 0; i < (size_t)Trait::END; ++i)
     {
         if (player_bon::traits[i])
         {
@@ -172,115 +238,91 @@ void mk_lines()
             const std::string title = player_bon::trait_title(trait);
             const std::string descr = player_bon::trait_descr(trait);
 
-            lines_.push_back({offset + title, clr_text});
+            lines_.push_back(
+                StrAndClr(offset + title,
+                          clr_text));
 
-            std::vector<std::string> descr_lines;
+            const auto descr_lines =
+                text_format::split(descr,
+                                   max_w_descr);
 
-            text_format::split(descr, MAX_W_DESCR, descr_lines);
-
-            for (std::string& descr_line : descr_lines)
+            for (const std::string& descr_line : descr_lines)
             {
-                lines_.push_back({offset + descr_line, clr_text_dark});
+                lines_.push_back(
+                    StrAndClr(offset + descr_line,
+                              clr_text_dark));
             }
 
-            lines_.push_back({"", clr_text});
+            lines_.push_back(StrAndClr("", clr_text));
         }
     }
 }
 
-void shock_res_src_title(const Shock_src shock_src, std::string& str_ref)
+void CharacterDescr::draw()
 {
-    str_ref = "";
+    io::draw_info_scr_interface("Character description",
+                                InfScreenType::scrolling);
 
-    switch (shock_src)
+    int y_pos = 1;
+
+    const int nr_lines_tot = lines_.size();
+
+    int btm_nr = std::min(top_idx_ + max_nr_lines_on_scr - 1,
+                          nr_lines_tot - 1);
+
+    for (int i = top_idx_; i <= btm_nr; ++i)
     {
-    case Shock_src::time:
-        str_ref = "Time";
-        break;
+        const StrAndClr& line = lines_[i];
 
-    case Shock_src::cast_intr_spell:
-        str_ref = "Casting learned spells";
-        break;
+        io::draw_text(line.str,
+                      Panel::screen,
+                      P(0, y_pos),
+                      line.clr);
 
-    case Shock_src::see_mon:
-        str_ref = "Seeing monsters";
-        break;
-
-    case Shock_src::use_strange_item:
-        str_ref = "Using strange items";
-        break;
-
-    case Shock_src::misc:
-        str_ref = "Other";
-        break;
-
-    case Shock_src::END:
-        break;
+        ++y_pos;
     }
 }
 
-} //namespace
-
-void run()
+void CharacterDescr::update()
 {
-    mk_lines();
+    const int line_jump = 3;
+    const int nr_lines_tot = lines_.size();
 
-    const int LINE_JUMP           = 3;
-    const int NR_LINES_TOT        = lines_.size();
-    const int MAX_NR_LINES_ON_SCR = SCREEN_H - 2;
+    const auto input = io::get(false);
 
-    int top_nr = 0;
-    int btm_nr = std::min(top_nr + MAX_NR_LINES_ON_SCR - 1, NR_LINES_TOT - 1);
-
-    while (true)
+    switch (input.key)
     {
-        render::clear_screen();
+    case '2':
+    case SDLK_DOWN:
+    case 'j':
+        top_idx_ += line_jump;
 
-        render::draw_info_scr_interface("Character description",
-                                        Inf_screen_type::scrolling);
-
-        int y_pos = 1;
-
-        for (int i = top_nr; i <= btm_nr; ++i)
+        if (nr_lines_tot <= max_nr_lines_on_scr)
         {
-            const Str_and_clr& line = lines_[i];
-
-            render::draw_text(line.str,
-                              Panel::screen,
-                              P(0, y_pos++),
-                              line.clr);
+            top_idx_ = 0;
         }
-
-        render::update_screen();
-
-        const Key_data& d = input::input();
-
-        if (d.key == '2' || d.sdl_key == SDLK_DOWN || d.key == 'j')
+        else
         {
-            top_nr += LINE_JUMP;
+            top_idx_ = std::min(nr_lines_tot - max_nr_lines_on_scr,
+                                top_idx_);
+        }
+        break;
 
-            if (NR_LINES_TOT <= MAX_NR_LINES_ON_SCR)
-            {
-                top_nr = 0;
-            }
-            else
-            {
-                top_nr = std::min(NR_LINES_TOT - MAX_NR_LINES_ON_SCR, top_nr);
-            }
-        }
-        else if (d.key == '8' || d.sdl_key == SDLK_UP || d.key == 'k')
-        {
-            top_nr = std::max(0, top_nr - LINE_JUMP);
-        }
-        else if (d.sdl_key == SDLK_SPACE || d.sdl_key == SDLK_ESCAPE)
-        {
-            break;
-        }
+    case '8':
+    case SDLK_UP:
+    case 'k':
+        top_idx_ = std::max(0, top_idx_ - line_jump);
+        break;
 
-        btm_nr = std::min(top_nr + MAX_NR_LINES_ON_SCR - 1, NR_LINES_TOT - 1);
+    case SDLK_SPACE:
+    case SDLK_ESCAPE:
+        //
+        // Exit screen
+        //
+        states::pop();
+        break;
+
+    default:
+        break;
     }
-
-    render::draw_map_and_interface();
 }
-
-} //character_descr

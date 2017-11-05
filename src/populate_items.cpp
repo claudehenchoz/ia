@@ -2,76 +2,138 @@
 
 #include <vector>
 
+#include "mapgen.hpp"
 #include "actor_player.hpp"
 #include "map.hpp"
 #include "item_factory.hpp"
 #include "player_bon.hpp"
 #include "map_parsing.hpp"
-#include "utils.hpp"
+#include "feature_rigid.hpp"
+#include "feature_door.hpp"
+#include "feature_trap.hpp"
 
 namespace populate_items
 {
 
-void mk_items_on_floor()
+namespace
 {
-    int nr_spawns = rnd::range(4, 6);
 
-    if (player_bon::traits[size_t(Trait::treasure_hunter)])
+int nr_items()
+{
+    int nr = rnd::range(4, 5);
+
+    if (player_bon::traits[(size_t)Trait::treasure_hunter])
     {
-        nr_spawns += 2;
+        nr += rnd::range(1, 2);
     }
 
-    std::vector<Item_id> item_bucket;
+    return nr;
+}
+
+std::vector<ItemId> mk_item_bucket()
+{
+    std::vector<ItemId> item_bucket;
     item_bucket.clear();
 
-    for (int i = 0; i < int(Item_id::END); ++i)
+    for (int i = 0; i < (int)ItemId::END; ++i)
     {
-        const Item_data_t& data = item_data::data[i];
+        const ItemDataT& data = item_data::data[i];
 
-        //The following items are NOT allowed to spawn on the floor:
+        // The following items are NOT allowed to spawn on the floor:
         // * Intrinsic items
         // * Items with a dlvl range not matching current dlvl
         // * Items forbidden to spawn (e.g. unique items already spawned)
 
-        if (
-            int(data.type) < int(Item_type::END_OF_EXTR_ITEMS)      &&
-            data.spawn_std_range.is_in_range(map::dlvl)             &&
-            data.allow_spawn                                        &&
-            rnd::percent(data.chance_to_incl_in_floor_spawn_list))
+        if ((int)data.type < (int)ItemType::END_OF_EXTR_ITEMS &&
+            data.spawn_std_range.is_in_range(map::dlvl) &&
+            data.allow_spawn &&
+            rnd::percent(data.chance_to_incl_in_spawn_list))
         {
-            item_bucket.push_back(Item_id(i));
+            item_bucket.push_back(ItemId(i));
         }
     }
 
-    bool blocked[MAP_W][MAP_H];
-    map_parse::run(cell_check::Blocks_items(), blocked);
+    return item_bucket;
+}
 
-    std::vector<P> free_cells;
-    utils::mk_vector_from_bool_map(false, blocked, free_cells);
+void mk_blocked_map(bool out[map_w][map_h])
+{
+    map_parsers::BlocksItems()
+        .run(out);
 
-    for (int i = 0; i < nr_spawns; ++i)
+    for (int x = 0; x < map_w; ++x)
     {
-        if (free_cells.empty() || item_bucket.empty())
+        for (int y = 0; y < map_h; ++y)
+        {
+            // Shallow liquids doesn't block items, but let's not spawn there...
+            const FeatureId id = map::cells[x][y].rigid->id();
+
+            if (id == FeatureId::liquid_shallow)
+            {
+                out[x][y] = true;
+            }
+        }
+    }
+
+    const P& player_p = map::player->pos;
+
+    out[player_p.x][player_p.y] = true;
+}
+
+} // namespace
+
+void mk_items_on_floor()
+{
+    auto item_bucket = mk_item_bucket();
+
+    // Spawn items with a weighted random choice
+
+    //
+    // NOTE: Each index in the position vector corresponds to the same index in
+    //       the weights vector.
+    //
+    std::vector<P> positions;
+
+    std::vector<int> position_weights;
+
+    bool blocked[map_w][map_h];
+
+    mk_blocked_map(blocked);
+
+    mapgen::mk_explore_spawn_weights(
+        blocked,
+        positions,
+        position_weights);
+
+    const int nr = nr_items();
+
+    for (int i = 0; i < nr; ++i)
+    {
+        if (positions.empty() || item_bucket.empty())
         {
             break;
         }
 
-        const size_t    CELL_IDX    = rnd::range(0, free_cells.size() - 1);
-        const P&        pos         = free_cells[CELL_IDX];
-        const size_t    ITEM_IDX    = rnd::range(0, item_bucket.size() - 1);
-        const Item_id   id          = item_bucket[ITEM_IDX];
+        const size_t p_idx = rnd::weighted_choice(position_weights);
 
-        if (item_data::data[size_t(id)].allow_spawn)
+        const P& p = positions[p_idx];
+
+        const size_t item_idx = rnd::range(0, item_bucket.size() - 1);
+
+        const ItemId id = item_bucket[item_idx];
+
+        if (item_data::data[(size_t)id].allow_spawn)
         {
-            item_factory::mk_item_on_floor(id, pos);
+            item_factory::mk_item_on_floor(id, p);
 
-            free_cells.erase(begin(free_cells) + CELL_IDX);
+            positions.erase(begin(positions) + p_idx);
+            position_weights.erase(begin(position_weights) + p_idx);
         }
         else
         {
-            item_bucket.erase(begin(item_bucket) + ITEM_IDX);
+            item_bucket.erase(begin(item_bucket) + item_idx);
         }
     }
 }
 
-} //populate_items
+} // populate_items

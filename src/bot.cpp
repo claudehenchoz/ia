@@ -2,14 +2,13 @@
 
 #include "bot.hpp"
 
-#include <cassert>
 #include <algorithm>
 #include <vector>
 
 #include "properties.hpp"
 #include "actor.hpp"
+#include "actor_mon.hpp"
 #include "feature.hpp"
-#include "input.hpp"
 #include "map.hpp"
 #include "actor_player.hpp"
 #include "actor_factory.hpp"
@@ -18,9 +17,12 @@
 #include "inventory.hpp"
 #include "actor_mon.hpp"
 #include "map_parsing.hpp"
-#include "utils.hpp"
 #include "game_time.hpp"
 #include "map_travel.hpp"
+#include "explosion.hpp"
+#include "io.hpp"
+#include "sdl_base.hpp"
+#include "item_factory.hpp"
 
 namespace bot
 {
@@ -28,92 +30,176 @@ namespace bot
 namespace
 {
 
-std::vector<P> cur_path_;
+std::vector<P> path_;
 
-void find_path_to_stairs()
+void show_map_and_freeze(const std::string& msg)
 {
-    cur_path_.clear();
+    TRACE_FUNC_BEGIN;
 
-    bool blocked[MAP_W][MAP_H];
-    map_parse::run(cell_check::Blocks_move_cmn(false), blocked);
-
-    P stair_pos(-1, -1);
-
-    for (int x = 0; x < MAP_W; ++x)
+    for (int x = 0; x < map_w; ++x)
     {
-        for (int y = 0; y < MAP_H; ++y)
+        for (int y = 0; y < map_h; ++y)
         {
-            const auto cur_id = map::cells[x][y].rigid->id();
+            Cell& cell = map::cells[x][y];
 
-            if (cur_id == Feature_id::stairs)
+            cell.is_explored = true;
+            cell.is_seen_by_player = true;
+        }
+    }
+
+    for (Actor* const actor : game_time::actors)
+    {
+        if (!actor->is_player())
+        {
+            Mon* const mon = static_cast<Mon*>(actor);
+
+            mon->player_aware_of_me_counter_ = 999;
+        }
+    }
+
+    while (true)
+    {
+        io::draw_text("[" + msg + "]",
+                          Panel::screen,
+                          P(0, 0),
+                          clr_red_lgt);
+
+        io::update_screen();
+
+        sdl_base::sleep(1);
+
+        io::flush_input();
+    }
+}
+
+void find_stair_path()
+{
+    path_.clear();
+
+    bool blocked[map_w][map_h];
+
+    map_parsers::BlocksMoveCommon(ParseActors::no)
+        .run(blocked);
+
+    P stair_p(-1, -1);
+
+    for (int x = 0; x < map_w; ++x)
+    {
+        for (int y = 0; y < map_h; ++y)
+        {
+            const auto id = map::cells[x][y].rigid->id();
+
+            if (id == FeatureId::stairs)
             {
                 blocked[x][y] = false;
-                stair_pos.set(x, y);
+                stair_p.set(x, y);
             }
-            else if (cur_id == Feature_id::door)
+            else if (id == FeatureId::door)
             {
                 blocked[x][y] = false;
             }
         }
     }
 
-    assert(stair_pos != P(-1, -1));
+    if (stair_p.x == -1)
+    {
+        show_map_and_freeze("Could not find stairs");
+    }
 
-    path_find::run(map::player->pos, stair_pos, blocked, cur_path_);
+    const P& player_p = map::player->pos;
 
-    assert(!cur_path_.empty());
-    assert(cur_path_.front() == stair_pos);
+    if (blocked[player_p.x][player_p.y])
+    {
+        show_map_and_freeze("Player on blocked position");
+    }
+
+    pathfind(player_p,
+                   stair_p,
+                   blocked,
+                   path_);
+
+    if (path_.empty())
+    {
+        show_map_and_freeze("Could not find path to stairs");
+    }
+
+    ASSERT(path_.front() == stair_p);
 }
 
 bool walk_to_adj_cell(const P& p)
 {
-    assert(utils::is_pos_adj(map::player->pos, p, true));
+    ASSERT(is_pos_adj(map::player->pos, p, true));
 
-    char key = '0' + int(dir_utils::dir(p - map::player->pos));
+    char key = '0' + (int)dir_utils::dir(p - map::player->pos);
 
-    //Occasionally randomize movement
+    // Occasionally randomize movement
     if (rnd::one_in(5))
     {
         key = '0' + rnd::range(1, 9);
     }
 
-    input::handle_map_mode_key_press(Key_data(key));
+    game::handle_player_input(InputData(key));
 
     return map::player->pos == p;
 }
 
-} //namespace
+} // namespace
 
 void init()
 {
-    cur_path_.clear();
+    path_.clear();
 }
 
 void act()
 {
-    //=======================================================================
+    // =======================================================================
     // TESTS
-    //=======================================================================
-    for (Actor* actor : game_time::actors)
+    // =======================================================================
+#ifndef NDEBUG
+    for (size_t outer_idx = 0;
+         outer_idx < game_time::actors.size();
+         ++outer_idx)
     {
-#ifdef NDEBUG
-        (void)actor;
-#else
-        assert(utils::is_pos_inside_map(actor->pos));
-#endif
+        const Actor* const actor = game_time::actors[outer_idx];
+
+        ASSERT(map::is_pos_inside_map(actor->pos));
+
+        for (size_t inner_idx = 0;
+             inner_idx < game_time::actors.size();
+             ++inner_idx)
+        {
+            const Actor* const other_actor = game_time::actors[inner_idx];
+
+            if (outer_idx != inner_idx  &&
+                actor->is_alive()       &&
+                other_actor->is_alive())
+            {
+                if (actor == other_actor)
+                {
+                    show_map_and_freeze("Same actor encountered twice in list");
+                }
+
+                if (actor->pos == other_actor->pos)
+                {
+                    show_map_and_freeze("Two living actors at same pos (" +
+                                        std::to_string(actor->pos.x) + ", " +
+                                        std::to_string(actor->pos.y) + ")");
+                }
+            }
+        }
     }
+#endif
+    // =======================================================================
 
-    //=======================================================================
-
-    //Abort?
-    //TODO: Reimplement this
-//    if(input::is_key_held(SDLK_ESCAPE))
+    // Abort?
+    // TODO: Reimplement this
+//    if(io::is_key_held(SDLK_ESCAPE))
 //    {
 //        config::toggle_bot_playing();
 //    }
 
-    //Check if we are finished with the current run, if so, go back to DLVL 1
-    if (map::dlvl >= DLVL_LAST)
+    // Check if we are finished with the current run, if so, go back to dlvl 1
+    if (map::dlvl >= dlvl_last)
     {
         TRACE << "Starting new run on first dungeon level" << std::endl;
         map_travel::init();
@@ -121,9 +207,39 @@ void act()
         return;
     }
 
-    Prop_handler& prop_handler = map::player->prop_handler();
+    auto& inv = map::player->inv();
 
-    //Keep an allied Mi-go around to help getting out of sticky situations
+    // Use an Incinerator as ranged weapon
+    {
+        auto* wpn_item = inv.item_in_slot(SlotId::wpn);
+
+        if (!wpn_item || wpn_item->data().ranged.is_ranged_wpn)
+        {
+            delete inv.slots_[(size_t)SlotId::wpn].item;
+
+            inv.slots_[(size_t)SlotId::wpn].item = nullptr;
+
+            inv.put_in_slot(
+                SlotId::wpn,
+                item_factory::mk(ItemId::incinerator),
+                Verbosity::silent);
+        }
+    }
+
+    // If no armor, occasionally equip an asbesthos suite (helps not getting
+    // stuck on e.g. Energy Hounds)
+    if (!inv.slots_[(size_t)SlotId::body].item &&
+        rnd::one_in(20))
+    {
+        inv.put_in_slot(SlotId::body,
+                        item_factory::mk(ItemId::armor_asb_suit),
+                        Verbosity::silent);
+    }
+
+    PropHandler& prop_handler = map::player->prop_handler();
+
+    // Keep an allied Mi-go around (to help getting out of sticky situations,
+    // and for some allied monster code exercise)
     bool has_allied_mon = false;
 
     for (const Actor* const actor : game_time::actors)
@@ -137,93 +253,144 @@ void act()
 
     if (!has_allied_mon)
     {
-        actor_factory::summon(map::player->pos,
-                              {Actor_id::mi_go},
-                              Make_mon_aware::yes,
-                              map::player);
+        actor_factory::spawn(map::player->pos,
+                             std::vector<ActorId>(1, ActorId::mi_go),
+                             MakeMonAware::yes,
+                             map::player);
     }
 
-    //Occasionally apply rFear (to avoid getting stuck on fear-causing monsters)
+    // Occasionally apply rFear to avoid getting stuck on fear-causing monsters
     if (rnd::one_in(7))
     {
-        prop_handler.try_add(new Prop_rFear(Prop_turns::specific, 4));
+        prop_handler.apply(new PropRFear(PropTurns::specific, 4));
     }
 
-    //Occasionally apply Burning to a random actor (helps to avoid getting stuck)
+    // Occasionally apply Burning to a random actor (to avoid getting stuck)
     if (rnd::one_in(10))
     {
-        const int ELEMENT = rnd::range(0, game_time::actors.size() - 1);
-        Actor* const actor = game_time::actors[ELEMENT];
+        const int element = rnd::range(0, game_time::actors.size() - 1);
+        Actor* const actor = game_time::actors[element];
 
         if (actor != map::player)
         {
-            actor->prop_handler().try_add(new Prop_burning(Prop_turns::std));
+            actor->prop_handler().apply(new PropBurning(PropTurns::std));
         }
     }
 
-    //Occasionally teleport (to avoid getting stuck)
+    // Occasionally teleport (to avoid getting stuck)
     if (rnd::one_in(200))
     {
         map::player->teleport();
     }
 
-    //Occasionally send a TAB command to attack nearby monsters
+    // Occasionally send a TAB command to attack nearby monsters
     if (rnd::coin_toss())
     {
-        input::handle_map_mode_key_press(Key_data(SDLK_TAB));
+        game::handle_player_input(InputData(SDLK_TAB));
+
         return;
     }
 
-    //Occasionally apply a random property to exercise the prop code
+    // Occasionally send a 'wait 5 turns' command (just code exercise)
+    if (rnd::one_in(50))
+    {
+        game::handle_player_input(InputData('s'));
+
+        return;
+    }
+
+    // Occasionally fire at a random position
+    if (rnd::one_in(5))
+    {
+        auto& inv = map::player->inv();
+
+        auto* wpn_item = inv.item_in_slot(SlotId::wpn);
+
+        if (wpn_item && wpn_item->data().ranged.is_ranged_wpn)
+        {
+            auto* wpn = static_cast<Wpn*>(wpn_item);
+
+            wpn->nr_ammo_loaded_ = wpn->data().ranged.max_ammo;
+
+            game::handle_player_input(InputData('f'));
+
+            return;
+        }
+    }
+
+    // Occasionally apply a random property (to exercise the prop code)
     if (rnd::one_in(20))
     {
-        std::vector<Prop_id> prop_bucket;
+        std::vector<PropId> prop_bucket;
 
-        for (size_t i = 0; i < size_t(Prop_id::END); ++i)
+        for (size_t i = 0; i < (size_t)PropId::END; ++i)
         {
             if (prop_data::data[i].allow_test_on_bot)
             {
-                prop_bucket.push_back(Prop_id(i));
+                prop_bucket.push_back(PropId(i));
             }
         }
 
-        Prop_id     prop_id = prop_bucket[rnd::range(0, prop_bucket.size() - 1)];
-        Prop* const prop    = prop_handler.mk_prop(prop_id, Prop_turns::specific, 5);
+        PropId prop_id = prop_bucket[rnd::range(0, prop_bucket.size() - 1)];
 
-        prop_handler.try_add(prop);
+        Prop* const prop = prop_handler.mk_prop(prop_id,
+                                                PropTurns::specific,
+                                                5);
+
+        prop_handler.apply(prop);
     }
 
-    //Occasionally swap weapon (just some code exercise)
+    // Occasionally swap weapon (just some code exercise)
     if (rnd::one_in(50))
     {
-      input::handle_map_mode_key_press(Key_data('z'));
-      return;
+        game::handle_player_input(InputData('z'));
+
+        return;
     }
 
-    //Handle blocking door
-    for (int dx = -1; dx <= 1; ++dx)
+    // Occasionally cause shock spikes (code exercise)
+    if (rnd::one_in(100))
     {
-        for (int dy = -1; dy <= 1; ++dy)
+        map::player->incr_shock(200, ShockSrc::misc);
+        return;
+    }
+
+    // Occasionally run an explosion around the player (code exercise, and to
+    // avoid getting stuck)
+    if (rnd::one_in(50))
+    {
+        explosion::run(map::player->pos, ExplType::expl);
+
+        return;
+    }
+
+    // Handle blocking door
+    for (const P& d : dir_utils::dir_list)
+    {
+        const P p(map::player->pos + d);
+
+        auto* const f = map::cells[p.x][p.y].rigid;
+
+        if (f->id() == FeatureId::door)
         {
-            const P p(map::player->pos + P(dx, dy));
-            auto* const f = map::cells[p.x][p.y].rigid;
+            Door* const door = static_cast<Door*>(f);
 
-            if (f->id() == Feature_id::door)
+            door->reveal(Verbosity::silent);
+
+            if (door->is_stuck())
             {
-                Door* const door = static_cast<Door*>(f);
-                door->reveal(false);
+                f->hit(6, // Arbitrary
+                       DmgType::physical,
+                       DmgMethod::blunt,
+                       map::player);
 
-                if (door->is_stuck())
-                {
-                    f->hit(Dmg_type::physical, Dmg_method::kick, map::player);
-                    return;
-                }
+                return;
             }
         }
     }
 
-    //If we are terrified, wait in place
-    if (map::player->has_prop(Prop_id::terrified))
+    // If we are terrified, wait in place
+    if (map::player->has_prop(PropId::terrified))
     {
         if (walk_to_adj_cell(map::player->pos))
         {
@@ -231,9 +398,9 @@ void act()
         }
     }
 
-    find_path_to_stairs();
+    find_stair_path();
 
-    walk_to_adj_cell(cur_path_.back());
+    walk_to_adj_cell(path_.back());
 }
 
-} //Bot
+} // bot

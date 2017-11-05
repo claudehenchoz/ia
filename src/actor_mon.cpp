@@ -1,9 +1,11 @@
 #include "actor_mon.hpp"
 
 #include <vector>
-#include <cassert>
+#include <cstring>
+#include <algorithm>
 
 #include "init.hpp"
+#include "rl_utils.hpp"
 #include "item.hpp"
 #include "actor_player.hpp"
 #include "game_time.hpp"
@@ -13,9 +15,8 @@
 #include "feature_trap.hpp"
 #include "feature_mob.hpp"
 #include "properties.hpp"
-#include "render.hpp"
+#include "io.hpp"
 #include "sound.hpp"
-#include "utils.hpp"
 #include "map.hpp"
 #include "msg_log.hpp"
 #include "map_parsing.hpp"
@@ -29,62 +30,71 @@
 #include "popup.hpp"
 #include "fov.hpp"
 #include "text_format.hpp"
+#include "feature_door.hpp"
+#include "drop.hpp"
 
 Mon::Mon() :
-    Actor                       (),
-    aware_counter_              (0),
-    player_aware_of_me_counter_ (0),
-    is_msg_mon_in_view_printed_ (false),
-    last_dir_moved_             (Dir::center),
-    spell_cool_down_cur_        (0),
-    is_roaming_allowed_         (true),
-    is_sneaking_                (false),
-    leader_                     (nullptr),
-    tgt_                        (nullptr),
-    waiting_                    (false),
-    shock_caused_cur_           (0.0),
-    has_given_xp_for_spotting_  (false) {}
+    Actor(),
+    wary_of_player_counter_         (0),
+    aware_of_player_counter_        (0),
+    player_aware_of_me_counter_     (0),
+    is_msg_mon_in_view_printed_     (false),
+    is_player_feeling_msg_allowed_  (true),
+    last_dir_moved_                 (Dir::center),
+    is_roaming_allowed_             (MonRoamingAllowed::yes),
+    leader_                         (nullptr),
+    tgt_                            (nullptr),
+    is_tgt_seen_                    (false),
+    waiting_                        (false),
+    spells_                         ()
+{
+
+}
 
 Mon::~Mon()
 {
-    for (Spell* const spell : spells_known_)
+    for (auto& spell : spells_)
     {
-        delete spell;
+        delete spell.spell;
     }
 }
 
 void Mon::on_actor_turn()
 {
-    if (aware_counter_ > 0)
+    if (aware_of_player_counter_ > 0)
     {
-        --aware_counter_;
+        --wary_of_player_counter_;
+
+        --aware_of_player_counter_;
     }
 }
 
-//TODO: Some of the things done in this function should probably be moved to
-//"on_actor_turn()" instead. The purpose of this function ("act()") is only to
-//tell the actor to "do something".
 void Mon::act()
 {
+    const bool is_player_leader = is_actor_my_leader(map::player);
+
 #ifndef NDEBUG
-    //Sanity check - verify that monster is not outside the map
-    if (!utils::is_pos_inside_map(pos, false))
+    // Sanity check - verify that monster is not outside the map
+    if (!map::is_pos_inside_map(pos, false))
     {
         TRACE << "Monster outside map" << std::endl;
-        assert(false);
+        ASSERT(false);
     }
 
-    //Sanity check - verify that monster's leader does not have a leader (never allowed)
-    if (
-        leader_ && !is_actor_my_leader(map::player) &&  //Has a leader which is a monster?
-        static_cast<Mon*>(leader_)->leader_)            //Leader has a leader?
+    // Sanity check - verify that monster's leader does not have a leader
+    // (never allowed)
+    if (leader_ &&                              // Has leader?
+        !is_player_leader &&                    // Leader is monster?
+        static_cast<Mon*>(leader_)->leader_)    // Leader has a leader?
     {
         TRACE << "Two (or more) steps of leader is never allowed" << std::endl;
-        assert(false);
+        ASSERT(false);
     }
 #endif // NDEBUG
 
-    if (aware_counter_ <= 0 && !is_actor_my_leader(map::player))
+    if ((wary_of_player_counter_ <= 0) &&
+        (aware_of_player_counter_ <= 0) &&
+        !is_player_leader)
     {
         waiting_ = !waiting_;
 
@@ -94,125 +104,193 @@ void Mon::act()
             return;
         }
     }
-    else //Is aware, or player is leader
+    else // Is wary/aware, or player is leader
     {
         waiting_ = false;
     }
 
-    //Pick a target
+    //
+    // Pick a target
+    //
     std::vector<Actor*> tgt_bucket;
 
-    if (prop_handler_->has_prop(Prop_id::conflict))
+    if (has_prop(PropId::conflict))
     {
-        //Monster is conflicted (e.g. by player ring/amulet)
-        tgt_bucket = game_time::actors;
+        // Monster is conflicted (e.g. by Horn of Malice)
+        tgt_bucket = seen_actors();
 
-        bool hard_blocked_los[MAP_W][MAP_H];
-
-        const Rect fov_rect = fov::get_fov_rect(pos);
-
-        map_parse::run(cell_check::Blocks_los(),
-                       hard_blocked_los,
-                       Map_parse_mode::overwrite,
-                       fov_rect);
-
-        //Remove self and all unseen actors from vector
-        for (auto it = begin(tgt_bucket); it != end(tgt_bucket);)
-        {
-            if (*it == this || !can_see_actor(**it, hard_blocked_los))
-            {
-                tgt_bucket.erase(it);
-            }
-            else //Is a seen actor
-            {
-                ++it;
-            }
-        }
+        is_tgt_seen_ = !tgt_bucket.empty();
     }
-    else //Not conflicted
+    else // Not conflicted
     {
-        seen_foes(tgt_bucket);
+        tgt_bucket = seen_foes();
 
-        //If not aware, remove player from target bucket
-        if (aware_counter_ <= 0)
+        if (tgt_bucket.empty())
         {
-            for (auto it = begin(tgt_bucket); it != end(tgt_bucket); ++it)
+            // There are no seen foes
+            is_tgt_seen_ = false;
+
+            // Check if we are aware of foes instead
+            if (is_player_leader)
             {
-                if (*it == map::player)
+                // Only consider monsters which we can actually move towards
+
+                //
+                // TODO: This prevents player-allied monsters from casting
+                //       spells on unreachable hostile monsters - but it
+                //       probably doesn't matter for now
+                //
+
+                bool blocked[map_w][map_h];
+
+                map_parsers::BlocksActor(*this, ParseActors::no)
+                    .run(blocked);
+
+                // Do not consider doors blocking, if this is not a metal door,
+                // and we can open or bash doors
+                for (int x = 0; x < map_w; ++x)
                 {
-                    tgt_bucket.erase(it);
-                    break;
+                    for (int y = 0; y < map_h; ++y)
+                    {
+                        const auto* const f = map::cells[x][y].rigid;
+
+                        if (f->id() != FeatureId::door)
+                        {
+                            continue;
+                        }
+
+                        const auto* const door = static_cast<const Door*>(f);
+
+                        if (door->type() == DoorType::metal)
+                        {
+                            continue;
+                        }
+
+                        const auto& d = data();
+
+                        if (d.can_open_doors ||
+                            d.can_bash_doors)
+                        {
+                            blocked[x][y] = false;
+                        }
+                    }
+                }
+
+                int flood[map_w][map_h];
+
+                floodfill(pos,
+                          blocked,
+                          flood);
+
+                // Player is my leader; all player-hostile monsters which the
+                // player is aware of are candidates
+                for (Actor* const actor : game_time::actors)
+                {
+                    const P& p = actor->pos;
+
+                    if (!actor->is_player() &&
+                        !actor->is_actor_my_leader(map::player) &&
+                        (flood[p.x][p.y] > 0))
+                    {
+                        auto* const mon = static_cast<Mon*>(actor);
+
+                        if (mon->player_aware_of_me_counter_ > 0)
+                        {
+                            tgt_bucket.push_back(actor);
+                        }
+                    }
+                }
+            }
+            // Player is not my leader, are we aware of the player?
+            else if (aware_of_player_counter_ > 0)
+            {
+                // The player is a candidate
+                tgt_bucket.push_back(map::player);
+
+                // All player-allied creatures are candidates
+                for (Actor* const actor : game_time::actors)
+                {
+                    if (!actor->is_player() &&
+                        actor->is_actor_my_leader(map::player))
+                    {
+                        tgt_bucket.push_back(actor);
+                    }
                 }
             }
         }
-    }
-
-    tgt_ = utils::random_closest_actor(pos, tgt_bucket);
-
-    if (spell_cool_down_cur_ != 0)
-    {
-        --spell_cool_down_cur_;
-    }
-
-    if (aware_counter_ > 0)
-    {
-        is_roaming_allowed_ = true;
-
-        if (leader_)
+        else // There are seen foes
         {
-            if (leader_->is_alive() && !is_actor_my_leader(map::player))
+            is_tgt_seen_ = true;
+        }
+    }
+
+    tgt_ = map::random_closest_actor(pos, tgt_bucket);
+
+    if ((wary_of_player_counter_ > 0) ||
+        (aware_of_player_counter_ > 0))
+    {
+        is_roaming_allowed_ = MonRoamingAllowed::yes;
+
+        // Does the monster have a living leader?
+        if (leader_ &&
+            leader_->is_alive())
+        {
+            // If monster is aware of hostile player, make leader also aware
+            if (aware_of_player_counter_ > 0 &&
+                !is_player_leader)
             {
-                static_cast<Mon*>(leader_)->aware_counter_ =
-                    leader_->data().nr_turns_aware;
+                // Make leader aware
+                Mon* const leader_mon = static_cast<Mon*>(leader_);
+
+                leader_mon->aware_of_player_counter_ =
+                    std::max(leader_mon->data().nr_turns_aware,
+                             leader_mon->aware_of_player_counter_);
             }
         }
-        else //Monster does not have a leader
+        else // Monster does not have a living leader
         {
+            // Monster is wary or aware, occasionally make a sound
             if (is_alive() && rnd::one_in(12))
             {
-                speak_phrase(Alerts_mon::no);
+                speak_phrase(AlertsMon::no);
             }
         }
     }
 
-    is_sneaking_ = !is_actor_my_leader(map::player)         &&
-                   ability(Ability_id::stealth, true) > 0   &&
-                   !map::player->can_see_actor(*this);
+    // Array used for AI purposes, e.g. to prevent tactically bad positions, or
+    // prevent certain monsters from walking on a certain type of cells, etc.
+    // This is checked in all AI movement functions. Cells set to true are
+    // totally forbidden for the monster to move into.
+    bool ai_special_blockers[map_w][map_h];
 
-    //Array used for AI purposes, e.g. to prevent tactically bad positions,
-    //or prevent certain monsters from walking on a certain type of cells, etc.
-    //This is checked in all AI movement functions. Cells set to true are
-    //totally forbidden for the monster to move into.
-    bool ai_special_blockers[MAP_W][MAP_H];
     ai::info::set_special_blocked_cells(*this, ai_special_blockers);
 
-    //------------------------------ SPECIAL MONSTER ACTIONS
-    //                               (ZOMBIES RISING, WORMS MULTIPLYING...)
-    if (leader_ != map::player && (tgt_ == nullptr || tgt_ == map::player))
+    // -------------------------------------------------------------------------
+    // Special monster actions (e.g. zombies rising)
+    // -------------------------------------------------------------------------
+    if ((leader_ != map::player) &&
+        (!tgt_ || tgt_->is_player()))
     {
-        if (on_act() == Did_action::yes)
+        if (on_act() == DidAction::yes)
         {
             return;
         }
     }
 
-    //------------------------------ COMMON ACTIONS
-    //                               (MOVING, ATTACKING, CASTING SPELLS...)
+    // -------------------------------------------------------------------------
+    // Common actions (moving, attacking, casting spells, etc)
+    // -------------------------------------------------------------------------
 
-    //Looking is as an action if monster was not aware before, and became aware from looking.
-    //(This is to give the monsters some reaction time, and not instantly attack)
-    if (
-        data_->ai[size_t(Ai_id::looks)] &&
-        leader_ != map::player          &&
-        (tgt_ == nullptr || tgt_ == map::player))
-    {
-        if (ai::info::look_become_player_aware(*this))
-        {
-            return;
-        }
-    }
+    //
+    // NOTE: Monsters try to detect the player visually on standard turns,
+    //       otherwise very fast monsters are much better at finding the player
+    //
 
-    if (data_->ai[size_t(Ai_id::makes_room_for_friend)] && tgt_ == map::player)
+    if (data_->ai[(size_t)AiId::makes_room_for_friend] &&
+        !is_player_leader &&
+        (tgt_ == map::player) &&
+        is_tgt_seen_ &&
+        rnd::coin_toss())
     {
         if (ai::action::make_room_for_friend(*this))
         {
@@ -220,52 +298,64 @@ void Mon::act()
         }
     }
 
+    // Cast instead of attacking?
     if (rnd::one_in(5))
     {
-        if (ai::action::try_cast_random_spell(*this))
+        const bool did_cast = ai::action::try_cast_random_spell(*this);
+
+        if (did_cast)
         {
             return;
         }
     }
 
-    if (data_->ai[size_t(Ai_id::attacks)] && tgt_)
+    if (data_->ai[(size_t)AiId::attacks] &&
+        tgt_ &&
+        is_tgt_seen_)
     {
-        if (try_attack(*tgt_))
+        const bool did_attack = try_attack(*tgt_);
+
+        if (did_attack)
         {
             return;
         }
     }
 
-    if (ai::action::try_cast_random_spell(*this))
+    if (rnd::coin_toss())
     {
-        return;
+        const bool did_cast = ai::action::try_cast_random_spell(*this);
+
+        if (did_cast)
+        {
+            return;
+        }
     }
 
-    int erratic_move_pct = int(data_->erratic_move_pct);
+    int erratic_move_pct = (int)data_->erratic_move_pct;
 
-    //Never move erratically if frenzied
-    if (prop_handler_->has_prop(Prop_id::frenzied))
+    // Never move erratically if frenzied
+    if (has_prop(PropId::frenzied))
     {
         erratic_move_pct = 0;
     }
 
-    //Move less erratically if allied to player
-    if (is_actor_my_leader(map::player))
+    // Move less erratically if allied to player
+    if (is_player_leader)
     {
         erratic_move_pct /= 2;
     }
 
-    //Move more erratically if confused
-    if (prop_handler_->has_prop(Prop_id::confused))
+    // Move more erratically if confused
+    if (has_prop(PropId::confused) &&
+        (erratic_move_pct > 0))
     {
-        erratic_move_pct *= 2;
+        erratic_move_pct += 50;
     }
 
-    utils::set_constr_in_range(0, erratic_move_pct, 95);
+    set_constr_in_range(0, erratic_move_pct, 95);
 
-    //Occasionally move erratically
-    if (
-        data_->ai[size_t(Ai_id::moves_to_random_when_unaware)] &&
+    // Occasionally move erratically
+    if (data_->ai[(size_t)AiId::moves_to_random_when_unaware] &&
         rnd::percent(erratic_move_pct))
     {
         if (ai::action::move_to_random_adj_cell(*this))
@@ -274,9 +364,10 @@ void Mon::act()
         }
     }
 
-    const bool IS_TERRIFIED = prop_handler_->has_prop(Prop_id::terrified);
+    const bool is_terrified = has_prop(PropId::terrified);
 
-    if (data_->ai[size_t(Ai_id::moves_to_tgt_when_los)] && !IS_TERRIFIED)
+    if (data_->ai[(size_t)AiId::moves_to_tgt_when_los] &&
+        !is_terrified)
     {
         if (ai::action::move_to_tgt_simple(*this))
         {
@@ -286,20 +377,16 @@ void Mon::act()
 
     std::vector<P> path;
 
-    if (
-        data_->ai[size_t(Ai_id::paths_to_tgt_when_aware)]   &&
-        leader_ != map::player                              &&
-        !IS_TERRIFIED)
+    if ((data_->ai[(size_t)AiId::paths_to_tgt_when_aware] ||
+         is_player_leader) &&
+        !is_terrified)
     {
-        ai::info::try_set_path_to_player(*this, path);
+        path = ai::info::find_path_to_tgt(*this);
     }
 
-    if (leader_ != map::player)
+    if (ai::action::handle_closed_blocking_door(*this, path))
     {
-        if (ai::action::handle_closed_blocking_door(*this, path))
-        {
-            return;
-        }
+        return;
     }
 
     if (ai::action::step_path(*this, path))
@@ -307,9 +394,11 @@ void Mon::act()
         return;
     }
 
-    if (data_->ai[size_t(Ai_id::moves_to_leader)] && !IS_TERRIFIED)
+    if ((data_->ai[(size_t)AiId::moves_to_leader] ||
+         is_player_leader) &&
+        !is_terrified)
     {
-        ai::info::try_set_path_to_leader(*this, path);
+        path = ai::info::find_path_to_leader(*this);
 
         if (ai::action::step_path(*this, path))
         {
@@ -317,19 +406,18 @@ void Mon::act()
         }
     }
 
-    if (
-        data_->ai[size_t(Ai_id::moves_to_lair)] &&
-        leader_ != map::player                  &&
-        (tgt_ == nullptr || tgt_ == map::player))
+    if (data_->ai[(size_t)AiId::moves_to_lair]  &&
+        !is_player_leader &&
+        (!tgt_ || tgt_->is_player()))
     {
         if (ai::action::step_to_lair_if_los(*this, lair_pos_))
         {
             return;
         }
-        else //No LOS to lair
+        else // No LOS to lair
         {
-            //Try to use pathfinder to travel to lair
-            ai::info::try_set_path_to_lair_if_no_los(*this, path, lair_pos_);
+            // Try to use pathfinder to travel to lair
+            path = ai::info::find_path_to_lair_if_no_los(*this, lair_pos_);
 
             if (ai::action::step_path(*this, path))
             {
@@ -338,8 +426,9 @@ void Mon::act()
         }
     }
 
-    //When unaware, move randomly
-    if (data_->ai[size_t(Ai_id::moves_to_random_when_unaware)])
+    // When unaware, move randomly
+    if (data_->ai[(size_t)AiId::moves_to_random_when_unaware] &&
+        (!is_player_leader || rnd::one_in(8)))
     {
         if (ai::action::move_to_random_adj_cell(*this))
         {
@@ -347,116 +436,308 @@ void Mon::act()
         }
     }
 
-    //No action could be performed, just let someone else act
+    // No action could be performed, just let someone else act
     game_time::tick();
 }
 
-bool Mon::can_see_actor(const Actor& other, const bool hard_blocked_los[MAP_W][MAP_H]) const
+bool Mon::can_see_actor(const Actor& other,
+                        const bool hard_blocked_los[map_w][map_h]) const
 {
-    if (this == &other || !other.is_alive())
+    const bool is_seeable = is_actor_seeable(other, hard_blocked_los);
+
+    if (!is_seeable)
+    {
+        return false;
+    }
+
+    if (is_actor_my_leader(map::player))
+    {
+        // Monster is allied to player
+
+        // Player-allied monster looking at the player?
+        if (other.is_player())
+        {
+            return true;
+        }
+        else // Player-allied monster looking at other monster
+        {
+            const auto* const other_mon = static_cast<const Mon*>(&other);
+
+            return other_mon->player_aware_of_me_counter_ > 0;
+        }
+    }
+    else // Monster is hostile to player
+    {
+        return aware_of_player_counter_ > 0;
+    }
+
+    return true;
+}
+
+bool Mon::is_actor_seeable(const Actor& other,
+                           const bool hard_blocked_los[map_w][map_h]) const
+{
+    if ((this == &other) ||
+        (!other.is_alive()))
     {
         return true;
     }
 
-    //Outside FOV range?
+    // Outside FOV range?
     if (!fov::is_in_fov_range(pos, other.pos))
     {
-        //Other actor is outside FOV range
+        // Other actor is outside FOV range
         return false;
     }
 
-    //Monster allied to player looking at other monster which is hidden?
-    if (
-        is_actor_my_leader(map::player) &&
-        !other.is_player()              &&
-        static_cast<const Mon*>(&other)->is_sneaking_)
-    {
-        return false;
-    }
-
-    //Monster is blind?
+    // Monster is blind?
     if (!prop_handler_->allow_see())
     {
         return false;
     }
 
-    const Los_result los = fov::check_cell(pos, other.pos, hard_blocked_los);
+    const LosResult los =
+        fov::check_cell(pos,
+                        other.pos,
+                        hard_blocked_los);
 
-    //LOS blocked hard (e.g. a wall)?
+    // LOS blocked hard (e.g. a wall or smoke)?
     if (los.is_blocked_hard)
     {
         return false;
     }
 
-    const bool CAN_SEE_INVIS = has_prop(Prop_id::see_invis);
+    const bool can_see_invis = has_prop(PropId::see_invis);
 
-    //Actor is invisible, and monster cannot see invisible?
-    if (other.has_prop(Prop_id::invis) && !CAN_SEE_INVIS)
+    // Actor is invisible, and monster cannot see invisible?
+    if ((other.has_prop(PropId::invis) ||
+         other.has_prop(PropId::cloaked)) &&
+        !can_see_invis)
     {
         return false;
     }
 
-    bool        HAS_INFRAVIS                = has_prop(Prop_id::infravis);
-    const bool  IS_OTHER_INFRA_VISIBLE      = other.data().is_infra_visible;
+    bool has_darkvis = has_prop(PropId::darkvis);
 
-    const bool  CAN_SEE_ACTOR_WITH_INFRAVIS = HAS_INFRAVIS && IS_OTHER_INFRA_VISIBLE;
+    const bool can_see_other_in_drk =
+        can_see_invis ||
+        has_darkvis;
 
-    const bool  CAN_SEE_OTHER_IN_DRK        = CAN_SEE_INVIS || CAN_SEE_ACTOR_WITH_INFRAVIS;
-
-    //Blocked by darkness, and not seeing actor with infravision?
-    if (los.is_blocked_by_drk && !CAN_SEE_OTHER_IN_DRK)
+    // Blocked by darkness, and not seeing actor with infravision?
+    if (los.is_blocked_by_drk &&
+        !can_see_other_in_drk)
     {
         return false;
     }
 
-    //OK, all checks passed, actor can bee seen!
+    // OK, all checks passed, actor can bee seen!
     return true;
+}
+
+std::vector<Actor*> Mon::seen_actors() const
+{
+    std::vector<Actor*> out;
+
+    bool blocked_los[map_w][map_h];
+
+    R los_rect(std::max(0, pos.x - fov_std_radi_int),
+               std::max(0, pos.y - fov_std_radi_int),
+               std::min(map_w - 1, pos.x + fov_std_radi_int),
+               std::min(map_h - 1, pos.y + fov_std_radi_int));
+
+    map_parsers::BlocksLos()
+        .run(blocked_los,
+             MapParseMode::overwrite,
+             los_rect);
+
+    for (Actor* actor : game_time::actors)
+    {
+        if ((actor != this) &&
+            actor->is_alive())
+        {
+            const Mon* const mon = static_cast<const Mon*>(this);
+
+            if (mon->can_see_actor(*actor, blocked_los))
+            {
+                out.push_back(actor);
+            }
+        }
+    }
+
+    return out;
+}
+
+std::vector<Actor*> Mon::seen_foes() const
+{
+    std::vector<Actor*> out;
+
+    bool blocked_los[map_w][map_h];
+
+    R los_rect(std::max(0, pos.x - fov_std_radi_int),
+               std::max(0, pos.y - fov_std_radi_int),
+               std::min(map_w - 1, pos.x + fov_std_radi_int),
+               std::min(map_h - 1, pos.y + fov_std_radi_int));
+
+    map_parsers::BlocksLos()
+        .run(blocked_los,
+             MapParseMode::overwrite,
+             los_rect);
+
+    for (Actor* actor : game_time::actors)
+    {
+        if ((actor != this) &&
+            actor->is_alive())
+        {
+            const bool is_hostile_to_player =
+                !is_actor_my_leader(map::player);
+
+            const bool is_other_hostile_to_player =
+                actor->is_player() ?
+                false :
+                !actor->is_actor_my_leader(map::player);
+
+            const bool is_enemy =
+                is_hostile_to_player != is_other_hostile_to_player;
+
+            const Mon* const mon = static_cast<const Mon*>(this);
+
+            if (is_enemy &&
+                mon->can_see_actor(*actor, blocked_los))
+            {
+                out.push_back(actor);
+            }
+        }
+    }
+
+    return out;
+}
+
+std::vector<Actor*> Mon::seeable_foes() const
+{
+    std::vector<Actor*> out;
+
+    bool blocked_los[map_w][map_h];
+
+    const R fov_rect = fov::get_fov_rect(pos);
+
+    map_parsers::BlocksLos()
+        .run(blocked_los,
+             MapParseMode::overwrite,
+             fov_rect);
+
+    for (Actor* actor : game_time::actors)
+    {
+        if ((actor != this) &&
+            actor->is_alive())
+        {
+            const bool is_hostile_to_player =
+                !is_actor_my_leader(map::player);
+
+            const bool is_other_hostile_to_player =
+                actor->is_player() ?
+                false :
+                !actor->is_actor_my_leader(map::player);
+
+            const bool is_enemy =
+                is_hostile_to_player != is_other_hostile_to_player;
+
+            if (is_enemy &&
+                is_actor_seeable(*actor, blocked_los))
+            {
+                out.push_back(actor);
+            }
+        }
+    }
+
+    return out;
+}
+
+bool Mon::is_sneaking() const
+{
+    //
+    // NOTE: We require that the stealth ability is greater than zero, BOTH when
+    //       including property effects, and when NOT including them - otherwise
+    //       a non-sneaky monster will suddenly be able to sneak while blessed,
+    //       for example
+    //
+    return
+        (player_aware_of_me_counter_ <= 0) &&
+        (ability(AbilityId::stealth, false) > 0) && // Without properties
+        (ability(AbilityId::stealth, true) > 0) &&  // With    -
+        !is_actor_my_leader(map::player);
 }
 
 void Mon::on_std_turn()
 {
+    // Countdown all spell cooldowns
+    for (auto& spell : spells_)
+    {
+        int& cooldown = spell.cooldown;
+
+        if (cooldown > 0)
+        {
+            --cooldown;
+        }
+    }
+
+    // Monsters try to detect the player visually on standard turns, otherwise
+    // very fast monsters are much better at finding the player
+    if (is_alive() &&
+        data_->ai[(size_t)AiId::looks] &&
+        (leader_ != map::player) &&
+        (!tgt_ || tgt_->is_player()))
+    {
+        const bool did_become_aware_now = ai::info::look(*this);
+
+        // If the monster became aware, give it some reaction time
+        if (did_become_aware_now)
+        {
+            prop_handler().apply(new PropWaiting(PropTurns::specific, 1));
+        }
+    }
+
     on_std_turn_hook();
 }
 
 void Mon::on_hit(int& dmg,
-                 const Dmg_type dmg_type,
-                 const Dmg_method method,
-                 const Allow_wound allow_wound)
+                 const DmgType dmg_type,
+                 const DmgMethod method,
+                 const AllowWound allow_wound)
 {
     (void)dmg;
     (void)dmg_type;
     (void)method;
     (void)allow_wound;
 
-    aware_counter_ = data_->nr_turns_aware;
+    aware_of_player_counter_ =
+        std::max(data_->nr_turns_aware,
+                 aware_of_player_counter_);
 }
 
 void Mon::move(Dir dir)
 {
 #ifndef NDEBUG
-
     if (dir == Dir::END)
     {
         TRACE << "Illegal direction parameter" << std::endl;
-        assert(false);
+        ASSERT(false);
     }
 
-    if (!utils::is_pos_inside_map(pos, false))
+    if (!map::is_pos_inside_map(pos, false))
     {
         TRACE << "Monster outside map" << std::endl;
-        assert(false);
+        ASSERT(false);
     }
-
 #endif // NDEBUG
 
     prop_handler().affect_move_dir(pos, dir);
 
-    //Trap affects leaving?
+    // Trap affects leaving?
     if (dir != Dir::center)
     {
         auto* f = map::cells[pos.x][pos.y].rigid;
 
-        if (f->id() == Feature_id::trap)
+        if (f->id() == FeatureId::trap)
         {
             dir = static_cast<Trap*>(f)->actor_try_leave(*this, dir);
 
@@ -472,17 +753,20 @@ void Mon::move(Dir dir)
     // Movement direction is stored for AI purposes
     last_dir_moved_ = dir;
 
-    const P tgt_cell(pos + dir_utils::offset(dir));
+    const P tgt_p(pos + dir_utils::offset(dir));
 
-    if (dir != Dir::center && utils::is_pos_inside_map(tgt_cell, false))
+    if (dir != Dir::center && map::is_pos_inside_map(tgt_p, false))
     {
-        pos = tgt_cell;
+        pos = tgt_p;
 
-        //Bump features in target cell (i.e. to trigger traps)
+        // Bump features in target cell (i.e. to trigger traps)
         std::vector<Mob*> mobs;
         game_time::mobs_at_pos(pos, mobs);
 
-        for (auto* m : mobs) {m->bump(*this);}
+        for (auto* m : mobs)
+        {
+            m->bump(*this);
+        }
 
         map::cells[pos.x][pos.y].rigid->bump(*this);
     }
@@ -490,82 +774,216 @@ void Mon::move(Dir dir)
     game_time::tick();
 }
 
+Clr Mon::clr() const
+{
+    if (state_ != ActorState::alive)
+    {
+        return data_->color;
+    }
+
+    Clr tmp_clr;
+
+    if (prop_handler_->affect_actor_clr(tmp_clr))
+    {
+        return tmp_clr;
+    }
+
+    return data_->color;
+}
+
+SpellSkill Mon::spell_skill(const SpellId id) const
+{
+    (void)id;
+
+    for (const auto& spell : spells_)
+    {
+        if (spell.spell->id() == id)
+        {
+            return spell.skill;
+        }
+    }
+
+    ASSERT(false);
+
+    return SpellSkill::basic;
+}
+
 void Mon::hear_sound(const Snd& snd)
 {
-    if (is_alive() && snd.is_alerting_mon())
+    if (has_prop(PropId::deaf))
     {
-        become_aware(false);
+        return;
+    }
+
+    snd.on_heard(*this);
+
+    // The monster may have become deaf through the sound callback (e.g. from
+    // the Horn of Deafening artifact)
+    if (has_prop(PropId::deaf))
+    {
+        return;
+    }
+
+    if (is_alive() &&
+        snd.is_alerting_mon())
+    {
+        const bool was_aware_before = aware_of_player_counter_ > 0;
+
+        become_aware_player(false);
+
+        // Give the monster some reaction time
+        if (!was_aware_before &&
+            !is_actor_my_leader(map::player))
+        {
+            prop_handler().apply(new PropWaiting(PropTurns::specific, 1));
+        }
     }
 }
 
-void Mon::speak_phrase(const Alerts_mon alerts_others)
+void Mon::speak_phrase(const AlertsMon alerts_others)
 {
-    const bool IS_SEEN_BY_PLAYER = map::player->can_see_actor(*this);
+    const bool is_seen_by_player = map::player->can_see_actor(*this);
 
-    const std::string msg = IS_SEEN_BY_PLAYER ?
-                            aggro_phrase_mon_seen() :
-                            aggro_phrase_mon_hidden();
+    std::string msg =
+        is_seen_by_player ?
+        aggro_msg_mon_seen() :
+        aggro_msg_mon_hidden();
 
-    const Sfx_id sfx = IS_SEEN_BY_PLAYER ?
-                       aggro_sfx_mon_seen() :
-                       aggro_sfx_mon_hidden();
+    msg = text_format::first_to_upper(msg);
+
+    const SfxId sfx =
+        is_seen_by_player ?
+        aggro_sfx_mon_seen() :
+        aggro_sfx_mon_hidden();
 
     Snd snd(msg,
             sfx,
-            Ignore_msg_if_origin_seen::no,
+            IgnoreMsgIfOriginSeen::no,
             pos,
             this,
-            Snd_vol::low,
+            SndVol::low,
             alerts_others);
 
     snd_emit::run(snd);
 }
 
-void Mon::become_aware(const bool IS_FROM_SEEING)
+void Mon::become_aware_player(const bool is_from_seeing,
+                              const int factor)
 {
-    if (is_alive())
+    if (!is_alive() || is_actor_my_leader(map::player))
     {
-        const int AWARENESS_CNT_BEFORE  = aware_counter_;
-        aware_counter_                  = data_->nr_turns_aware;
+        return;
+    }
 
-        if (AWARENESS_CNT_BEFORE <= 0)
+    const int nr_turns = data_->nr_turns_aware * factor;
+
+    const int aware_counter_before = aware_of_player_counter_;
+
+    aware_of_player_counter_=
+        std::max(nr_turns,
+                 aware_counter_before);
+
+    wary_of_player_counter_ = aware_of_player_counter_;
+
+    if (aware_counter_before <= 0)
+    {
+        if (is_from_seeing &&
+            map::player->can_see_actor(*this))
         {
-            if (IS_FROM_SEEING && map::player->can_see_actor(*this))
-            {
-                map::player->update_fov();
-                render::draw_map_and_interface(true);
-                msg_log::add(name_the() + " sees me!");
-            }
+            std::string msg =
+                text_format::first_to_upper(name_the()) +
+                " sees me!";
 
-            if (rnd::coin_toss())
-            {
-                speak_phrase(Alerts_mon::yes);
-            }
+            std::string dir_str = "";
+
+            dir_utils::compass_dir_name(map::player->pos,
+                                        pos,
+                                        dir_str);
+
+            msg += "(" + dir_str + ")";
+
+            msg_log::add(msg);
+        }
+
+        if (rnd::coin_toss())
+        {
+            speak_phrase(AlertsMon::yes);
         }
     }
 }
 
-void Mon::set_player_aware_of_me(const int DURATION_FACTOR)
+void Mon::become_wary_player()
 {
-    const int LOWER             = 4 * DURATION_FACTOR;
-    const int UPPER             = 6 * DURATION_FACTOR;
-    const int ROLL              = rnd::range(LOWER, UPPER);
-    player_aware_of_me_counter_ = std::max(player_aware_of_me_counter_, ROLL);
+    if (!is_alive() || is_actor_my_leader(map::player))
+    {
+        return;
+    }
+
+    // Reusing the monster data aware duration to determine number of wary turns
+    const int nr_turns = data_->nr_turns_aware;
+
+    const int wary_counter_before = wary_of_player_counter_;
+
+    wary_of_player_counter_=
+        std::max(nr_turns, wary_counter_before);
+
+    if (wary_counter_before <= 0)
+    {
+        if (map::player->can_see_actor(*this))
+        {
+            std::string msg = text_format::first_to_upper(data_->wary_msg);
+
+            if (!msg.empty())
+            {
+                std::string dir_str = "";
+
+                dir_utils::compass_dir_name(map::player->pos,
+                                            pos,
+                                            dir_str);
+
+                msg += "(" + dir_str + ")";
+
+                msg_log::add(msg);
+            }
+        }
+
+        if (rnd::one_in(4))
+        {
+            speak_phrase(AlertsMon::no);
+        }
+    }
+}
+
+void Mon::set_player_aware_of_me(int duration_factor)
+{
+    int nr_turns = 2 * duration_factor;
+
+    if (player_bon::bg() == Bg::rogue)
+    {
+        nr_turns *= 8;
+    }
+
+    player_aware_of_me_counter_ =
+        std::max(player_aware_of_me_counter_, nr_turns);
 }
 
 bool Mon::try_attack(Actor& defender)
 {
-    if (
-        state_ != Actor_state::alive ||
-        (aware_counter_ <= 0 && leader_ != map::player))
+    if (state_ != ActorState::alive ||
+        ((aware_of_player_counter_ <= 0) &&
+         (leader_ != map::player)))
     {
         return false;
     }
 
-    Ai_avail_attacks_data my_avail_attacks;
-    avail_attacks(defender, my_avail_attacks);
+    map::update_vision();
 
-    const Ai_att_data att = choose_att(my_avail_attacks);
+    AiAvailAttacksData my_avail_attacks;
+
+    avail_attacks(defender,
+                  my_avail_attacks);
+
+    const AiAttData att = choose_att(my_avail_attacks);
 
     if (!att.wpn)
     {
@@ -592,19 +1010,25 @@ bool Mon::try_attack(Actor& defender)
             return true;
         }
 
-        //Check if friend is in the way (with a small chance to ignore this)
+        // Check if friend is in the way (with a small chance to ignore this)
         bool is_blocked_by_friend = false;
 
         if (rnd::fraction(4, 5))
         {
             std::vector<P> line;
-            line_calc::calc_new_line(pos, defender.pos, true, 9999, false, line);
+
+            line_calc::calc_new_line(pos,
+                                     defender.pos,
+                                     true,
+                                     9999,
+                                     false,
+                                     line);
 
             for (P& line_pos : line)
             {
                 if (line_pos != pos && line_pos != defender.pos)
                 {
-                    Actor* const actor_here = utils::actor_at_pos(line_pos);
+                    Actor* const actor_here = map::actor_at_pos(line_pos);
 
                     if (actor_here)
                     {
@@ -620,26 +1044,29 @@ bool Mon::try_attack(Actor& defender)
             return false;
         }
 
-        const int NR_TURNS_NO_RANGED = data_->ranged_cooldown_turns;
+        const int nr_turns_no_ranged = data_->ranged_cooldown_turns;
 
-        Prop_disabled_ranged* ranged_cooldown_prop =
-            new Prop_disabled_ranged(Prop_turns::specific, NR_TURNS_NO_RANGED);
+        PropDisabledRanged* ranged_cooldown_prop =
+            new PropDisabledRanged(PropTurns::specific, nr_turns_no_ranged);
 
-        prop_handler_->try_add(ranged_cooldown_prop);
+        prop_handler_->apply(ranged_cooldown_prop);
 
-        attack::ranged(this, pos, defender.pos, *att.wpn);
+        const bool did_attack = attack::ranged(this,
+                                               pos,
+                                               defender.pos,
+                                               *att.wpn);
 
-        return true;
+        return did_attack;
     }
 
     return false;
 }
 
-void Mon::avail_attacks(Actor& defender, Ai_avail_attacks_data& dst)
+void Mon::avail_attacks(Actor& defender, AiAvailAttacksData& dst)
 {
     if (prop_handler_->allow_attack(Verbosity::silent))
     {
-        dst.is_melee = utils::is_pos_adj(pos, defender.pos, false);
+        dst.is_melee = is_pos_adj(pos, defender.pos, false);
 
         Wpn* wpn = nullptr;
         const size_t nr_intrinsics = inv_->intrinsics_size();
@@ -648,8 +1075,8 @@ void Mon::avail_attacks(Actor& defender, Ai_avail_attacks_data& dst)
         {
             if (prop_handler_->allow_attack_melee(Verbosity::silent))
             {
-                //Melee weapon in wielded slot?
-                wpn = static_cast<Wpn*>(inv_->item_in_slot(Slot_id::wpn));
+                // Melee weapon in wielded slot?
+                wpn = static_cast<Wpn*>(inv_->item_in_slot(SlotId::wpn));
 
                 if (wpn)
                 {
@@ -659,7 +1086,7 @@ void Mon::avail_attacks(Actor& defender, Ai_avail_attacks_data& dst)
                     }
                 }
 
-                //Intrinsic melee attacks?
+                // Intrinsic melee attacks?
                 for (size_t i = 0; i < nr_intrinsics; ++i)
                 {
                     wpn = static_cast<Wpn*>(inv_->intrinsic_in_element(i));
@@ -671,12 +1098,12 @@ void Mon::avail_attacks(Actor& defender, Ai_avail_attacks_data& dst)
                 }
             }
         }
-        else //Ranged attack
+        else // Ranged attack
         {
             if (prop_handler_->allow_attack_ranged(Verbosity::silent))
             {
-                //Ranged weapon in wielded slot?
-                wpn = static_cast<Wpn*>(inv_->item_in_slot(Slot_id::wpn));
+                // Ranged weapon in wielded slot?
+                wpn = static_cast<Wpn*>(inv_->item_in_slot(SlotId::wpn));
 
                 if (wpn)
                 {
@@ -684,9 +1111,8 @@ void Mon::avail_attacks(Actor& defender, Ai_avail_attacks_data& dst)
                     {
                         dst.weapons.push_back(wpn);
 
-                        //Check if reload time instead
-                        if (
-                            wpn->nr_ammo_loaded_ == 0 &&
+                        // Check if reload time instead
+                        if ((wpn->nr_ammo_loaded_ == 0) &&
                             !wpn->data().ranged.has_infinite_ammo)
                         {
                             if (inv_->has_ammo_for_firearm_in_inventory())
@@ -697,7 +1123,7 @@ void Mon::avail_attacks(Actor& defender, Ai_avail_attacks_data& dst)
                     }
                 }
 
-                //Intrinsic ranged attacks?
+                // Intrinsic ranged attacks?
                 for (size_t i = 0; i < nr_intrinsics; ++i)
                 {
                     wpn = static_cast<Wpn*>(inv_->intrinsic_in_element(i));
@@ -712,18 +1138,18 @@ void Mon::avail_attacks(Actor& defender, Ai_avail_attacks_data& dst)
     }
 }
 
-Ai_att_data Mon::choose_att(const Ai_avail_attacks_data& mon_avail_attacks)
+AiAttData Mon::choose_att(const AiAvailAttacksData& mon_avail_attacks)
 {
-    Ai_att_data att(nullptr, mon_avail_attacks.is_melee);
+    AiAttData att(nullptr, mon_avail_attacks.is_melee);
 
     if (mon_avail_attacks.weapons.empty())
     {
         return att;
     }
 
-    const size_t IDX = rnd::range(0, mon_avail_attacks.weapons.size() - 1);
+    const size_t idx = rnd::range(0, mon_avail_attacks.weapons.size() - 1);
 
-    att.wpn = mon_avail_attacks.weapons[IDX];
+    att.wpn = mon_avail_attacks.weapons[idx];
 
     return att;
 }
@@ -733,7 +1159,7 @@ bool Mon::is_leader_of(const Actor* const actor) const
     if (!actor || actor->is_player())
         return false;
 
-    //Actor is a monster
+    // Actor is a monster
     return static_cast<const Mon*>(actor)->leader_ == this;
 }
 
@@ -742,11 +1168,11 @@ bool Mon::is_actor_my_leader(const Actor* const actor) const
     return leader_ == actor;
 }
 
-int Mon::group_size()
+int Mon::nr_mon_in_group()
 {
     const Actor* const group_leader = leader_ ? leader_ : this;
 
-    int ret = 1; //Starting at one to include leader
+    int ret = 1; // Starting at one to include leader
 
     for (const Actor* const actor : game_time::actors)
     {
@@ -759,17 +1185,59 @@ int Mon::group_size()
     return ret;
 }
 
-//--------------------------------------------------------- SPECIFIC MONSTERS
+void Mon::add_spell(SpellSkill skill, Spell* const spell)
+{
+    const bool is_new =
+        std::find_if(begin(spells_),
+                     end(spells_),
+                     [spell](MonSpell& spell_entry)
+                     {
+                         return spell_entry.spell->id() == spell->id();
+                     }) == end(spells_);
+
+    if (!is_new)
+    {
+        delete spell;
+
+        return;
+    }
+
+    MonSpell spell_entry;
+
+    spell_entry.spell = spell;
+
+    spell_entry.skill = skill;
+
+    spells_.push_back(spell_entry);
+}
+
+void Mon::add_spell(SpellSkill skill, SpellId id)
+{
+    auto* const spell = spell_handling::mk_spell_from_id(id);
+
+    add_spell(skill, spell);
+}
+
+void  Mon::add_random_spell(SpellSkill skill)
+{
+    auto* spell = spell_handling::random_spell_for_mon();
+
+    add_spell(skill, spell);
+}
+
+// -----------------------------------------------------------------------------
+// Specific monsters
+// -----------------------------------------------------------------------------
 std::string Cultist::cultist_phrase()
 {
     std::vector<std::string> phrase_bucket;
 
-    const God* const god = gods::cur_god();
+    const God* const god = gods::current_god();
 
     if (god && rnd::coin_toss())
     {
-        const std::string name   = god->name();
-        const std::string descr  = god->descr();
+        const std::string name = god->name();
+        const std::string descr = god->descr();
         phrase_bucket.push_back(name + " save us!");
         phrase_bucket.push_back(descr + " will save us!");
         phrase_bucket.push_back(name + ", guide us!");
@@ -817,170 +1285,287 @@ std::string Cultist::cultist_phrase()
 
 void Cultist::mk_start_items()
 {
-    //If we are on a low-ish dlvl, let the vast majority of cultists carry pistols
-    const bool  IS_LOW_DLVL   = map::dlvl < 4;
+    // If we are on a low dlvl, let the vast majority of cultists carry pistols
+    const bool is_low_dlvl = map::dlvl < 4;
 
-    const int   PISTOL        = IS_LOW_DLVL   ? 20 : 6;
-    const int   PUMP_SHOTGUN  = PISTOL        + 3;
-    const int   SAWN_SHOTGUN  = PUMP_SHOTGUN  + 3;
-    const int   MG            = SAWN_SHOTGUN  + 1;
+    const int pistol = is_low_dlvl ? 20 : 6;
+    const int pump_shotgun = pistol + 3;
+    const int sawn_shotgun = pump_shotgun + 3;
+    const int mg = sawn_shotgun + 1;
+    const int tot = mg;
 
-    const int   TOT           = MG;
-    const int   RND           = map::dlvl == 0 ? PISTOL : rnd::range(1, TOT);
+    const int rnd =
+        (map::dlvl == 0) ?
+        pistol :
+        rnd::range(1, tot);
 
-    if (RND <= PISTOL)
+    if (rnd <= pistol)
     {
-        Item*   item            = item_factory::mk(Item_id::pistol);
-        Wpn*    wpn             = static_cast<Wpn*>(item);
-        const int AMMO_CAP      = wpn->data().ranged.max_ammo;
-        wpn->nr_ammo_loaded_    = rnd::range(AMMO_CAP / 4, AMMO_CAP);
+        Item* item = item_factory::mk(ItemId::pistol);
 
-        inv_->put_in_slot(Slot_id::wpn, item);
+        Wpn* wpn = static_cast<Wpn*>(item);
 
-        if (rnd::one_in(6))
+        const int ammo_cap = wpn->data().ranged.max_ammo;
+
+        wpn->nr_ammo_loaded_ = rnd::range(ammo_cap / 2, ammo_cap);
+
+        inv_->put_in_slot(SlotId::wpn,
+                          item,
+                          Verbosity::silent);
+
+        if (rnd::coin_toss())
         {
-            inv_->put_in_backpack(item_factory::mk(Item_id::pistol_mag));
+            inv_->put_in_backpack(item_factory::mk(ItemId::pistol_mag));
         }
     }
-    else if (RND <= PUMP_SHOTGUN)
+    else if (rnd <= pump_shotgun)
     {
-        Item*   item            = item_factory::mk(Item_id::pump_shotgun);
-        Wpn*    wpn             = static_cast<Wpn*>(item);
-        const int AMMO_CAP      = wpn->data().ranged.max_ammo;
-        wpn->nr_ammo_loaded_    = rnd::range(AMMO_CAP / 4, AMMO_CAP);
+        Item* item = item_factory::mk(ItemId::pump_shotgun);
 
-        inv_->put_in_slot(Slot_id::wpn, item);
+        Wpn* wpn = static_cast<Wpn*>(item);
 
-        if (rnd::one_in(4))
+        const int ammo_cap = wpn->data().ranged.max_ammo;
+
+        wpn->nr_ammo_loaded_ = rnd::range(ammo_cap / 2, ammo_cap);
+
+        inv_->put_in_slot(SlotId::wpn,
+                          item,
+                          Verbosity::silent);
+
+        if (rnd::one_in(3))
         {
-            item            = item_factory::mk(Item_id::shotgun_shell);
+            item = item_factory::mk(ItemId::shotgun_shell);
+
             item->nr_items_ = rnd::range(1, 8);
+
             inv_->put_in_backpack(item);
         }
     }
-    else if (RND <= SAWN_SHOTGUN)
+    else if (rnd <= sawn_shotgun)
     {
-        inv_->put_in_slot(Slot_id::wpn, item_factory::mk(Item_id::sawed_off));
+        inv_->put_in_slot(SlotId::wpn,
+                          item_factory::mk(ItemId::sawed_off),
+                          Verbosity::silent);
 
         if (rnd::one_in(4))
         {
-            Item* item      = item_factory::mk(Item_id::shotgun_shell);
+            Item* item = item_factory::mk(ItemId::shotgun_shell);
+
             item->nr_items_ = rnd::range(1, 8);
+
             inv_->put_in_backpack(item);
         }
     }
-    else //Machine gun
+    else // Machine gun
     {
-        //Number of machine gun bullets loaded needs to be a multiple of the number of
-        //projectiles fired in each burst
-        Item*       item        = item_factory::mk(Item_id::machine_gun);
-        Wpn* const  wpn         = static_cast<Wpn*>(item);
-        const int   CAP_SCALED  = wpn->data().ranged.max_ammo / NR_MG_PROJECTILES;
-        const int   MIN_SCALED  = CAP_SCALED / 4;
-        wpn->nr_ammo_loaded_    = rnd::range(MIN_SCALED, CAP_SCALED) * NR_MG_PROJECTILES;
-        inv_->put_in_slot(Slot_id::wpn, item);
+        // Number of machine gun bullets loaded needs to be a multiple of the
+        // number of projectiles fired in each burst
+        Item* item = item_factory::mk(ItemId::machine_gun);
+
+        Wpn* const wpn = static_cast<Wpn*>(item);
+
+        const int cap_scaled = wpn->data().ranged.max_ammo / nr_mg_projectiles;
+
+        const int min_scaled = cap_scaled / 2;
+
+        wpn->nr_ammo_loaded_ =
+            rnd::range(min_scaled, cap_scaled) * nr_mg_projectiles;
+
+        inv_->put_in_slot(SlotId::wpn,
+                          item,
+                          Verbosity::silent);
     }
 
     if (rnd::one_in(8))
     {
-        inv_->put_in_backpack(item_factory::mk_random_scroll_or_potion(true, true));
+        inv_->put_in_backpack(
+            item_factory::mk_random_scroll_or_potion(true, true));
     }
 
     if (rnd::one_in(12))
     {
-        spells_known_.push_back(spell_handling::random_spell_for_mon());
+        add_random_spell(SpellSkill::basic);
+
+        if (rnd::coin_toss())
+        {
+            add_random_spell(SpellSkill::basic);
+        }
     }
 }
 
-void Cultist_electric::mk_start_items()
+void BogTcher::mk_start_items()
 {
-    Item*       item        = item_factory::mk(Item_id::mi_go_gun);
-    Wpn*        wpn         = static_cast<Wpn*>(item);
-    const int   AMMO_CAP    = wpn->data().ranged.max_ammo;
+    Item* item = item_factory::mk(ItemId::spike_gun);
 
-    wpn->nr_ammo_loaded_     = rnd::range(AMMO_CAP / 4, AMMO_CAP);
+    Wpn* wpn = static_cast<Wpn*>(item);
 
-    inv_->put_in_slot(Slot_id::wpn, item);
+    const int ammo_cap = wpn->data().ranged.max_ammo;
 
-    if (rnd::one_in(5))
-    {
-        inv_->put_in_backpack(item_factory::mk_random_scroll_or_potion(true, true));
-    }
+    wpn->nr_ammo_loaded_ = rnd::range(ammo_cap / 2, ammo_cap);
 
-    if (rnd::one_in(3))
-    {
-        spells_known_.push_back(spell_handling::random_spell_for_mon());
-    }
-}
-
-void Cultist_spike_gun::mk_start_items()
-{
-    Item*       item        = item_factory::mk(Item_id::spike_gun);
-    Wpn*        wpn         = static_cast<Wpn*>(item);
-    const int   AMMO_CAP    = wpn->data().ranged.max_ammo;
-    wpn->nr_ammo_loaded_    = rnd::range(AMMO_CAP / 4, AMMO_CAP);
-
-    inv_->put_in_slot(Slot_id::wpn, item);
+    inv_->put_in_slot(SlotId::wpn,
+                      item,
+                      Verbosity::silent);
 
     if (rnd::one_in(4))
     {
-        item = item_factory::mk(Item_id::iron_spike);
+        item = item_factory::mk(ItemId::iron_spike);
         item->nr_items_ = rnd::range(4, 12);
         inv_->put_in_backpack(item);
     }
 }
 
-void Cultist_priest::mk_start_items()
+void CultistPriest::mk_start_items()
 {
-    Item* item = item_factory::mk(Item_id::dagger);
-    item->melee_dmg_plus_ = 2;
-    inv_->put_in_slot(Slot_id::wpn, item);
+    add_spell(SpellSkill::basic, SpellId::heal);
+    add_spell(SpellSkill::basic, SpellId::darkbolt);
+    add_spell(SpellSkill::basic, SpellId::enfeeble);
+    add_spell(SpellSkill::basic, SpellId::knockback);
+    add_spell(SpellSkill::basic, SpellId::spell_shield);
 
-    inv_->put_in_backpack(item_factory::mk_random_scroll_or_potion(true, true));
-    inv_->put_in_backpack(item_factory::mk_random_scroll_or_potion(true, true));
-
-    const int NR_SPELLS = 3;
-
-    for (int i = 0; i < NR_SPELLS; ++i)
+    if (rnd::coin_toss())
     {
-        spells_known_.push_back(spell_handling::random_spell_for_mon());
+        add_spell(SpellSkill::basic, SpellId::teleport);
+    }
+
+    if (rnd::coin_toss())
+    {
+        add_spell(SpellSkill::basic, SpellId::summon);
+    }
+
+    if (rnd::coin_toss())
+    {
+        add_spell(SpellSkill::basic, SpellId::pest);
+    }
+
+    Item* item = item_factory::mk(ItemId::dagger);
+
+    item->melee_dmg_plus_ = 2;
+
+    inv_->put_in_slot(SlotId::wpn,
+                      item,
+                      Verbosity::silent);
+
+    // Make some treasures to drop
+    for (int i = rnd::range(1, 2); i > 0; --i)
+    {
+        inv_->put_in_backpack(
+            item_factory::mk_random_scroll_or_potion(true, true));
     }
 }
 
-void Fire_hound::mk_start_items()
+void CultistWizard::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::fire_hound_breath));
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::fire_hound_bite));
+    add_spell(SpellSkill::expert, SpellId::heal);
+    add_spell(SpellSkill::expert, SpellId::darkbolt);
+    add_spell(SpellSkill::expert, SpellId::knockback);
+    add_spell(SpellSkill::expert, SpellId::spell_shield);
+
+    add_spell(SpellSkill::basic, SpellId::enfeeble);
+
+    if (rnd::coin_toss())
+    {
+        add_spell(SpellSkill::expert, SpellId::teleport);
+    }
+
+    if (rnd::coin_toss())
+    {
+        add_spell(SpellSkill::expert, SpellId::summon);
+    }
+
+    if (rnd::coin_toss())
+    {
+        add_spell(SpellSkill::expert, SpellId::pest);
+    }
+
+    // Make some treasures to drop
+    for (int i = rnd::range(1, 2); i > 0; --i)
+    {
+        inv_->put_in_backpack(
+            item_factory::mk_random_scroll_or_potion(true, true));
+    }
+}
+
+void CultistArchWizard::mk_start_items()
+{
+    add_spell(SpellSkill::master, SpellId::heal);
+    add_spell(SpellSkill::master, SpellId::darkbolt);
+    add_spell(SpellSkill::master, SpellId::knockback);
+    add_spell(SpellSkill::master, SpellId::burn);
+    add_spell(SpellSkill::master, SpellId::spell_shield);
+
+    add_spell(SpellSkill::expert, SpellId::enfeeble);
+
+    if (rnd::coin_toss())
+    {
+        add_spell(SpellSkill::master, SpellId::teleport);
+    }
+
+    if (rnd::coin_toss())
+    {
+        add_spell(SpellSkill::master, SpellId::summon);
+    }
+
+    if (rnd::coin_toss())
+    {
+        add_spell(SpellSkill::master, SpellId::pest);
+    }
+
+    // Make some treasures to drop
+    for (int i = rnd::range(1, 2); i > 0; --i)
+    {
+        inv_->put_in_backpack(
+            item_factory::mk_random_scroll_or_potion(true, true));
+    }
+}
+
+void FireHound::mk_start_items()
+{
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::fire_hound_breath));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::fire_hound_bite));
+}
+
+void EnergyHound::mk_start_items()
+{
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::energy_hound_breath));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::energy_hound_bite));
 }
 
 void Zuul::place_hook()
 {
-    if (actor_data::data[size_t(Actor_id::zuul)].nr_left_allowed_to_spawn > 0)
+    if (actor_data::data[(size_t)ActorId::zuul].nr_left_allowed_to_spawn > 0)
     {
-        //NOTE: Do not call die() here - that would have side effects such as player
-        //getting XP. Instead, simply set the dead state to destroyed.
-        state_                      = Actor_state::destroyed;
+        //
+        // NOTE: Do not call die() here - that would have side effects. Instead,
+        //       simply set the dead state to destroyed.
+        //
+        state_ = ActorState::destroyed;
 
-        Actor* actor                = actor_factory::mk(Actor_id::cultist_priest, pos);
-        auto& priest_prop_handler   = actor->prop_handler();
+        Actor* actor = actor_factory::mk(ActorId::cultist_priest, pos);
 
-        auto* poss_by_zuul_prop     = new Prop_poss_by_zuul(Prop_turns::indefinite);
+        auto& priest_prop_handler = actor->prop_handler();
 
-        priest_prop_handler.try_add(poss_by_zuul_prop);
+        auto* poss_by_zuul_prop = new PropPossByZuul(PropTurns::indefinite);
+
+        priest_prop_handler.apply(poss_by_zuul_prop,
+                                    PropSrc::intr,
+                                    true,
+                                    Verbosity::silent);
+
         actor->restore_hp(999, false, Verbosity::silent);
     }
 }
 
 void Zuul::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::zuul_bite));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::zuul_bite));
 }
 
-Did_action Vortex::on_act()
+DidAction Vortex::on_act()
 {
     if (!is_alive())
     {
-        return Did_action::no;
+        return DidAction::no;
     }
 
     if (pull_cooldown > 0)
@@ -988,56 +1573,60 @@ Did_action Vortex::on_act()
         --pull_cooldown;
     }
 
-    if (aware_counter_ <= 0 || pull_cooldown > 0)
+    if ((aware_of_player_counter_ <= 0) ||
+        (pull_cooldown > 0))
     {
-        return Did_action::no;
+        return DidAction::no;
     }
 
     const P& player_pos = map::player->pos;
 
-    if (!utils::is_pos_adj(pos, player_pos, true) && rnd::one_in(4))
+    if (!is_pos_adj(pos, player_pos, true) &&
+        rnd::coin_toss())
     {
         TRACE << "Vortex attempting to pull player" << std::endl;
 
-        const P   delta               = player_pos - pos;
-        P         knock_back_from_pos    = player_pos;
+        const P delta = player_pos - pos;
+
+        P knockback_from_pos = player_pos;
 
         if (delta.x >  1)
         {
-            knock_back_from_pos.x++;
+            ++knockback_from_pos.x;
         }
 
         if (delta.x < -1)
         {
-            knock_back_from_pos.x--;
+            --knockback_from_pos.x;
         }
 
         if (delta.y >  1)
         {
-            knock_back_from_pos.y++;
+            ++knockback_from_pos.y;
         }
 
         if (delta.y < -1)
         {
-            knock_back_from_pos.y--;
+            --knockback_from_pos.y;
         }
 
-        if (knock_back_from_pos != player_pos)
+        if (knockback_from_pos != player_pos)
         {
-            TRACE << "Good pos found to knockback player from (";
-            TRACE << knock_back_from_pos.x << ",";
-            TRACE << knock_back_from_pos.y << ")" << std::endl;
-            TRACE << "Player position: ";
-            TRACE << player_pos.x << "," << player_pos.y << ")" << std::endl;
+            TRACE << "Pos found to knockback player from: "
+                  << knockback_from_pos.x << ", "
+                  << knockback_from_pos.y << std::endl;
 
-            bool blocked_los[MAP_W][MAP_H];
+            TRACE << "Player pos: "
+                  << player_pos.x << ", " << player_pos.y << std::endl;
 
-            const Rect fov_rect = fov::get_fov_rect(pos);
+            bool blocked_los[map_w][map_h];
 
-            map_parse::run(cell_check::Blocks_los(),
-                           blocked_los,
-                           Map_parse_mode::overwrite,
-                           fov_rect);
+             const R fov_rect = fov::get_fov_rect(pos);
+
+             map_parsers::BlocksLos()
+                 .run(blocked_los,
+                      MapParseMode::overwrite,
+                      fov_rect);
 
             if (can_see_actor(*(map::player), blocked_los))
             {
@@ -1047,7 +1636,7 @@ Did_action Vortex::on_act()
 
                 if (map::player->can_see_actor(*this))
                 {
-                    msg_log::add("The Vortex attempts to pull me in!");
+                    msg_log::add("The Vortex pulls me!");
                 }
                 else
                 {
@@ -1056,249 +1645,233 @@ Did_action Vortex::on_act()
 
                 TRACE << "Attempt pull (knockback)" << std::endl;
 
-                knock_back::try_knock_back(*(map::player), knock_back_from_pos, false, false);
+                //
+                // TODO: Add sfx
+                //
+                knockback::run(*map::player,
+                               knockback_from_pos,
+                               false,
+                               Verbosity::silent);
 
-                pull_cooldown = 5;
+                pull_cooldown = 2;
 
                 game_time::tick();
 
-                return Did_action::yes;
+                return DidAction::yes;
             }
         }
     }
 
-    return Did_action::no;
+    return DidAction::no;
 }
 
-void Dust_vortex::on_death()
+void DustVortex::mk_start_items()
 {
-    //TODO: Make a sound effect for this
-    Snd snd("",
-            Sfx_id::END,
-            Ignore_msg_if_origin_seen::yes,
-            pos,
-            this,
-            Snd_vol::high,
-            Alerts_mon::yes);
-
-    snd_emit::run(snd);
-
-    explosion::run(pos,
-                   Expl_type::apply_prop,
-                   Expl_src::misc,
-                   Emit_expl_snd::no,
-                   0,
-                   new Prop_blind(Prop_turns::std),
-                   &clr_gray);
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::dust_vortex_engulf));
 }
 
-void Dust_vortex::mk_start_items()
+void FireVortex::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::dust_vortex_engulf));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::fire_vortex_engulf));
 }
 
-void Fire_vortex::on_death()
+void EnergyVortex::mk_start_items()
 {
-    //TODO: Make a sound effect for this
-    Snd snd("",
-            Sfx_id::END,
-            Ignore_msg_if_origin_seen::yes,
-            pos,
-            this,
-            Snd_vol::high,
-            Alerts_mon::yes);
-
-    snd_emit::run(snd);
-
-    explosion::run(pos,
-                   Expl_type::apply_prop,
-                   Expl_src::misc,
-                   Emit_expl_snd::no,
-                   0,
-                   new Prop_burning(Prop_turns::std),
-                   &clr_red_lgt);
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::energy_vortex_engulf));
 }
 
-void Fire_vortex::mk_start_items()
+DidAction Ghost::on_act()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::fire_vortex_engulf));
-}
-
-Did_action Ghost::on_act()
-{
-    if (
-        is_alive()                                      &&
-        aware_counter_ > 0                              &&
-        utils::is_pos_adj(pos, map::player->pos, false) &&
+    if (is_alive() &&
+        (aware_of_player_counter_ > 0) &&
+        is_pos_adj(pos, map::player->pos, false) &&
         rnd::one_in(4))
     {
         set_player_aware_of_me();
 
-        const bool          PLAYER_SEES_ME  = map::player->can_see_actor(*this);
-        const std::string   name            = PLAYER_SEES_ME ? name_the() : "It";
+        const bool player_sees_me =
+            map::player->can_see_actor(*this);
+
+        const std::string name =
+            player_sees_me ?
+            text_format::first_to_upper(name_the()) :
+            "It";
 
         msg_log::add(name + " reaches for me...");
 
-        const int DODGE_SKILL = map::player->ability(Ability_id::dodge_att, true);
-
-        const Ability_roll_result roll_result = ability_roll::roll(DODGE_SKILL, map::player);
-
-        const bool PLAYER_DODGES = roll_result >= success;
-
-        if (PLAYER_DODGES)
-        {
-            msg_log::add("I dodge!", clr_msg_good);
-        }
-        else
-        {
-            map::player->prop_handler().try_add(new Prop_slowed(Prop_turns::std));
-        }
+        map::player->prop_handler().apply(
+            new PropWeakened(PropTurns::std));
 
         game_time::tick();
 
-        return Did_action::yes;
+        return DidAction::yes;
     }
 
-    return Did_action::no;
+    return DidAction::no;
 }
 
 void Ghost::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::ghost_claw));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::ghost_claw));
+}
+
+DidAction Phantasm::on_act()
+{
+    const auto ghost_act = Ghost::on_act();
+
+    if (ghost_act == DidAction::yes)
+    {
+        return DidAction::yes;
+    }
+
+    if (is_alive() &&
+        !has_prop(PropId::cloaked) &&
+        rnd::one_in(20))
+    {
+        prop_handler_->apply(new PropCloaked(PropTurns::indefinite));
+
+        game_time::tick();
+
+        return DidAction::yes;
+    }
+
+    return DidAction::no;
 }
 
 void Phantasm::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::phantasm_sickle));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::phantasm_sickle));
 }
 
 void Wraith::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::wraith_claw));
-    spells_known_.push_back(spell_handling::random_spell_for_mon());
-    spells_known_.push_back(spell_handling::random_spell_for_mon());
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::wraith_claw));
+
+    add_random_spell(SpellSkill::basic);
+    add_random_spell(SpellSkill::basic);
 }
 
-void Mi_go::mk_start_items()
+void MiGo::mk_start_items()
 {
-    Item*       item        = item_factory::mk(Item_id::mi_go_gun);
-    Wpn*        wpn         = static_cast<Wpn*>(item);
-    const int   AMMO_CAP    = wpn->data().ranged.max_ammo;
+    Item* item = item_factory::mk(ItemId::mi_go_gun);
+    Wpn* wpn = static_cast<Wpn*>(item);
+    const int ammo_cap = wpn->data().ranged.max_ammo;
 
-    wpn->nr_ammo_loaded_ = rnd::range(AMMO_CAP / 4, AMMO_CAP);
+    wpn->nr_ammo_loaded_ = rnd::range(ammo_cap / 4, ammo_cap);
 
-    inv_->put_in_slot(Slot_id::wpn, item);
+    inv_->put_in_slot(SlotId::wpn,
+                      item,
+                      Verbosity::silent);
 
-    if (id() == Actor_id::mi_go)
+    if (id() == ActorId::mi_go)
     {
-        inv_->put_in_intrinsics(item_factory::mk(Item_id::mi_go_sting));
+        inv_->put_in_intrinsics(item_factory::mk(ItemId::mi_go_sting));
     }
-    else if (id() == Actor_id::mi_go_commander)
+    else if (id() == ActorId::mi_go_commander)
     {
-        inv_->put_in_intrinsics(item_factory::mk(Item_id::mi_go_commander_sting));
+        inv_->put_in_intrinsics(
+            item_factory::mk(ItemId::mi_go_commander_sting));
 
         if (rnd::one_in(3))
         {
-            inv_->put_in_slot(Slot_id::body, item_factory::mk(Item_id::armor_mi_go));
+            inv_->put_in_slot(SlotId::body,
+                              item_factory::mk(ItemId::armor_mi_go),
+                              Verbosity::silent);
         }
     }
 
-    if (rnd::one_in(9))
-    {
-        inv_->put_in_backpack(item_factory::mk(Item_id::mi_go_gun_ammo));
-    }
-
-    spells_known_.push_back(new Spell_teleport);
-    spells_known_.push_back(new Spell_mi_go_hypno);
-    spells_known_.push_back(new Spell_heal_self);
-
-    if (rnd::coin_toss())
-    {
-        spells_known_.push_back(spell_handling::random_spell_for_mon());
-    }
+    add_spell(SpellSkill::expert, SpellId::mi_go_hypno);
 }
 
-void Sentry_drone::mk_start_items()
+void SentryDrone::mk_start_items()
 {
-    spells_known_.push_back(new Spell_teleport);
-    spells_known_.push_back(new Spell_heal_self);
-    spells_known_.push_back(new Spell_darkbolt);
-    spells_known_.push_back(new Spell_burn);
+    add_spell(SpellSkill::expert, SpellId::heal);
+    add_spell(SpellSkill::expert, SpellId::darkbolt);
+    add_spell(SpellSkill::expert, SpellId::burn);
 }
 
-void Flying_polyp::mk_start_items()
+void FlyingPolyp::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::polyp_tentacle));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::polyp_tentacle));
 }
 
-void Greater_polyp::mk_start_items()
+void GreaterPolyp::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::greater_polyp_tentacle));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::greater_polyp_tentacle));
+}
+
+void MindLeech::mk_start_items()
+{
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::mind_leech_sting));
+}
+
+void SpiritLeech::mk_start_items()
+{
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::spirit_leech_sting));
+}
+
+void LifeLeech::mk_start_items()
+{
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::life_leech_sting));
 }
 
 void Rat::mk_start_items()
 {
     Item* item = nullptr;
 
-    if (rnd::percent() < 15)
-    {
-        item = item_factory::mk(Item_id::rat_bite_diseased);
-    }
-    else
-    {
-        item = item_factory::mk(Item_id::rat_bite);
-    }
+    item = item_factory::mk(ItemId::rat_bite);
 
     inv_->put_in_intrinsics(item);
 }
 
-void Rat_thing::mk_start_items()
+void RatThing::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::rat_thing_bite));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::rat_thing_bite));
 }
 
-void Brown_jenkin::mk_start_items()
+void BrownJenkin::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::brown_jenkin_bite));
-    spells_known_.push_back(new Spell_teleport);
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::brown_jenkin_bite));
+
+    add_spell(SpellSkill::basic, SpellId::teleport);
 }
 
 void Shadow::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::shadow_claw));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::shadow_claw));
 }
 
-void Invis_stalker::mk_start_items()
+void InvisStalker::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::invis_stalker_claw));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::invis_stalker_claw));
 }
 
 void Ghoul::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::ghoul_claw));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::ghoul_claw));
 }
 
 void Ghoul::place_hook()
 {
-    //If player is Ghoul, then Ghouls are allied to player
+    // If player is Ghoul, then Ghouls are allied to player
     if (player_bon::bg() == Bg::ghoul)
     {
         leader_ = map::player;
     }
 }
 
-Did_action Ghoul::on_act()
+DidAction Ghoul::on_act()
 {
     if (!is_alive())
     {
-        return Did_action::no;
+        return DidAction::no;
     }
 
     if (rnd::coin_toss())
     {
         const auto did_action = try_eat_corpse();
 
-        if (did_action == Did_action::yes)
+        if (did_action == DidAction::yes)
         {
             game_time::tick();
 
@@ -1306,303 +1879,280 @@ Did_action Ghoul::on_act()
         }
     }
 
-    return Did_action::no;
+    return DidAction::no;
+}
+
+void VoidTraveler::mk_start_items()
+{
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::void_traveler_rip));
+}
+
+DidAction VoidTraveler::on_act()
+{
+    if (!is_alive())
+    {
+        return DidAction::no;
+    }
+
+    const int teleport_one_in_n = 12;
+
+    if (rnd::one_in(teleport_one_in_n))
+    {
+        teleport();
+
+        game_time::tick();
+
+        return DidAction::yes;
+    }
+
+    return DidAction::no;
+}
+
+void ElderVoidTraveler::mk_start_items()
+{
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::elder_void_traveler_rip));
+
+    add_spell(SpellSkill::expert, SpellId::heal);
+    add_spell(SpellSkill::expert, SpellId::burn);
+    add_spell(SpellSkill::expert, SpellId::deafen);
+    add_spell(SpellSkill::expert, SpellId::spell_shield);
 }
 
 void Mummy::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::mummy_maul));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::mummy_maul));
 
-    spells_known_.push_back(spell_handling::mk_spell_from_id(Spell_id::disease));
+    add_spell(SpellSkill::expert, SpellId::disease);
+}
 
-    const int NR_SPELLS = 3;
+DidAction Mummy::on_act()
+{
 
-    for (int i = 0; i < NR_SPELLS; ++i)
+    return DidAction::no;
+}
+
+void MummyCrocHead::mk_start_items()
+{
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::croc_head_mummy_spear));
+}
+
+void MummyUnique::mk_start_items()
+{
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::mummy_maul));
+
+    add_spell(SpellSkill::expert, SpellId::darkbolt);
+    add_spell(SpellSkill::expert, SpellId::disease);
+    add_spell(SpellSkill::expert, SpellId::spell_shield);
+    add_spell(SpellSkill::expert, SpellId::burn);
+
+    add_spell(SpellSkill::basic, SpellId::enfeeble);
+}
+
+DidAction Khephren::on_act()
+{
+    // Summon locusts
+    if (!is_alive() ||
+        (aware_of_player_counter_ <= 0) ||
+        has_summoned_locusts)
     {
-        spells_known_.push_back(spell_handling::random_spell_for_mon());
-    }
-}
-
-Did_action Mummy::on_act()
-{
-    //TODO: Below is an implementation for mummies turning friendly if player is wielding
-    //the Staff of the Pharoh. It is commented out at least until after v17.0 is released.
-    //It is probably too powerful and unbalanced. Perhaps add this power as a separate
-    //spell to the Staff (something like "Pharohs Command")?
-
-//    if (
-//        !is_alive()          ||
-//        data_->is_unique     ||
-//        aware_counter_ <= 0  ||
-//        is_actor_my_leader(map::player))
-//    {
-//        return false;
-//    }
-//
-//    const Item* const player_wpn = map::player->inv().item_in_slot(Slot_id::wpn);
-//
-//    if (player_wpn && player_wpn->id() == Item_id::pharaoh_staff)
-//    {
-//        bool blocked_los[MAP_W][MAP_H];
-//        map_parse::run(cell_check::Blocks_los(), blocked_los);
-//
-//        if (can_see_actor(*map::player, blocked_los))
-//        {
-//            if (map::player->can_see_actor(*this))
-//            {
-//                const std::string name = name_the();
-//
-//                msg_log::add(name + " bows before me.", clr_white, false, true);
-//            }
-//
-//            leader_ = map::player;
-//
-//            game_time::tick();
-//            return true;
-//        }
-//    }
-
-    return Did_action::no;
-}
-
-void Mummy_croc_head::mk_start_items()
-{
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::croc_head_mummy_spear));
-}
-
-void Mummy_unique::mk_start_items()
-{
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::mummy_maul));
-
-    spells_known_.push_back(spell_handling::mk_spell_from_id(Spell_id::disease));
-
-    spells_known_.push_back(spell_handling::random_spell_for_mon());
-    spells_known_.push_back(spell_handling::random_spell_for_mon());
-    spells_known_.push_back(spell_handling::random_spell_for_mon());
-}
-
-Did_action Khephren::on_act()
-{
-    if (is_alive() && aware_counter_ > 0 && !has_summoned_locusts)
-    {
-        bool blocked[MAP_W][MAP_H];
-
-        const Rect fov_rect = fov::get_fov_rect(pos);
-
-        map_parse::run(cell_check::Blocks_los(),
-                       blocked,
-                       Map_parse_mode::overwrite,
-                       fov_rect);
-
-        if (can_see_actor(*(map::player), blocked))
-        {
-            map_parse::run(cell_check::Blocks_move_cmn(true), blocked);
-
-            const int SPAWN_AFTER_X = map::player->pos.x + FOV_STD_RADI_INT + 1;
-
-            for (int y = 0; y  < MAP_H; ++y)
-            {
-                for (int x = 0; x <= SPAWN_AFTER_X; ++x)
-                {
-                    blocked[x][y] = true;
-                }
-            }
-
-            std::vector<P> free_cells;
-            utils::mk_vector_from_bool_map(false, blocked, free_cells);
-
-            sort(begin(free_cells), end(free_cells), Is_closer_to_pos(pos));
-
-            const size_t NR_OF_SPAWNS = 15;
-
-            if (free_cells.size() >= NR_OF_SPAWNS + 1)
-            {
-                msg_log::add("Khephren calls a plague of Locusts!");
-                map::player->incr_shock(Shock_lvl::heavy, Shock_src::misc);
-
-                for (size_t i = 0; i < NR_OF_SPAWNS; ++i)
-                {
-                    Actor* const actor  = actor_factory::mk(Actor_id::locust, free_cells[0]);
-                    Mon* const mon      = static_cast<Mon*>(actor);
-                    mon->aware_counter_ = 999;
-                    mon->leader_        = leader_ ? leader_ : this;
-
-                    free_cells.erase(begin(free_cells));
-                }
-
-                render::draw_map_and_interface();
-                has_summoned_locusts = true;
-                game_time::tick();
-                return Did_action::yes;
-            }
-        }
+        return DidAction::no;
     }
 
-    return Did_action::no;
+    const R fov_rect = fov::get_fov_rect(pos);
+
+    bool blocked[map_w][map_h];
+
+    map_parsers::BlocksLos()
+        .run(blocked,
+             MapParseMode::overwrite,
+             fov_rect);
+
+    if (!can_see_actor(*(map::player), blocked))
+    {
+        return DidAction::no;
+    }
+
+    msg_log::add("Khephren calls a plague of Locusts!");
+
+    map::player->incr_shock(ShockLvl::terrifying,
+                            ShockSrc::misc);
+
+    Actor* const actor_to_set_as_leader = leader_ ? leader_ : this;
+
+    const size_t nr_of_spawns = 15;
+
+    const auto summoned =
+        actor_factory::spawn(pos,
+                             {nr_of_spawns, ActorId::locust},
+                             MakeMonAware::yes,
+                             actor_to_set_as_leader);
+
+    for (auto* const mon : summoned)
+    {
+        mon->prop_handler().apply(new PropSummoned(PropTurns::indefinite));
+    }
+
+    has_summoned_locusts = true;
+
+    game_time::tick();
+
+    return DidAction::yes;
 }
 
-void Deep_one::mk_start_items()
+void DeepOne::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::deep_one_javelin_att));
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::deep_one_spear_att));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::deep_one_javelin_att));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::deep_one_spear_att));
 }
 
 void Ape::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::ape_maul));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::ape_maul));
 }
 
-Did_action Ape::on_act()
+DidAction Ape::on_act()
 {
-    if (frenzy_cool_down_ > 0)
+    if (frenzy_cooldown_ > 0)
     {
-        --frenzy_cool_down_;
+        --frenzy_cooldown_;
     }
 
-    if (
-        frenzy_cool_down_ <= 0      &&
-        tgt_                        &&
-        (hp() <= hp_max(true) / 2))
+    if ((frenzy_cooldown_ <= 0) &&
+        tgt_ &&
+        (hp() <= (hp_max(true) / 2)))
     {
-        frenzy_cool_down_ = 30;
+        frenzy_cooldown_ = 30;
 
-        const int NR_FRENZY_TURNS = rnd::range(4, 6);
+        const int nr_frenzy_turns = rnd::range(4, 6);
 
-        prop_handler_->try_add(new Prop_frenzied(Prop_turns::specific, NR_FRENZY_TURNS));
+        prop_handler_->apply(
+            new PropFrenzied(PropTurns::specific, nr_frenzy_turns));
     }
 
-    return Did_action::no;
+    return DidAction::no;
 }
 
 void Raven::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::raven_peck));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::raven_peck));
 }
 
-void Giant_bat::mk_start_items()
+void GiantBat::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::giant_bat_bite));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::giant_bat_bite));
+}
+
+void VampireBat::mk_start_items()
+{
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::vampire_bat_bite));
+}
+
+void Abaxu::mk_start_items()
+{
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::abaxu_bite));
 }
 
 void Byakhee::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::byakhee_claw));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::byakhee_claw));
 }
 
-void Giant_mantis::mk_start_items()
+void GiantMantis::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::giant_mantis_claw));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::giant_mantis_claw));
 }
 
 void Chthonian::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::chthonian_bite));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::chthonian_bite));
 }
 
-void Death_fiend::mk_start_items()
+void DeathFiend::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::death_fiend_claw));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::death_fiend_claw));
 
-    spells_known_.push_back(new Spell_paralyze_mon);
-    spells_known_.push_back(new Spell_slow_mon);
-    spells_known_.push_back(new Spell_terrify_mon);
+    add_spell(SpellSkill::expert, SpellId::enfeeble);
 }
 
-void Hunting_horror::mk_start_items()
+void HuntingHorror::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::hunting_horror_bite));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::hunting_horror_bite));
 }
 
-Did_action Keziah_mason::on_act()
+DidAction KeziahMason::on_act()
 {
-    if (is_alive() && aware_counter_ > 0 && !has_summoned_jenkin)
+    // Summon Brown Jenkin ASAP
+    if (!is_alive() ||
+        has_summoned_jenkin)
     {
-        bool blocked_los[MAP_W][MAP_H];
-
-        const Rect fov_rect = fov::get_fov_rect(pos);
-
-        map_parse::run(cell_check::Blocks_los(),
-                       blocked_los,
-                       Map_parse_mode::overwrite,
-                       fov_rect);
-
-        if (can_see_actor(*(map::player), blocked_los))
-        {
-            map_parse::run(cell_check::Blocks_move_cmn(true), blocked_los);
-
-            std::vector<P> line;
-            line_calc::calc_new_line(pos, map::player->pos, true, 9999, false, line);
-
-            const int LINE_SIZE = line.size();
-
-            for (int i = 0; i < LINE_SIZE; ++i)
-            {
-                const P c = line[i];
-
-                if (!blocked_los[c.x][c.y])
-                {
-                    //TODO: Use the generalized summoning functionality
-                    set_player_aware_of_me();
-
-                    msg_log::add("Keziah summons Brown Jenkin!");
-
-                    Actor* const actor      = actor_factory::mk(Actor_id::brown_jenkin, c);
-
-                    Mon* jenkin             = static_cast<Mon*>(actor);
-
-                    render::draw_map_and_interface();
-
-                    has_summoned_jenkin     = true;
-                    jenkin->aware_counter_  = 999;
-                    jenkin->leader_         = leader_ ? leader_ : this;
-                    game_time::tick();
-                    return Did_action::yes;
-                }
-            }
-        }
+        return DidAction::no;
     }
 
-    return Did_action::no;
+    auto summoned =
+        actor_factory::spawn(
+            pos,
+            {ActorId::brown_jenkin},
+            MakeMonAware::no,
+            this);
+
+    ASSERT(summoned.size() == 1);
+
+    if (!summoned.empty())
+    {
+        auto* mon = summoned[0];
+
+        // Do not print a separate "feeling" for spawning this monster
+        mon->is_player_feeling_msg_allowed_ = true;
+    }
+
+    has_summoned_jenkin = true;
+
+    return DidAction::no;
 }
 
-void Keziah_mason::mk_start_items()
+void KeziahMason::mk_start_items()
 {
-    spells_known_.push_back(new Spell_teleport);
-    spells_known_.push_back(new Spell_heal_self);
-    spells_known_.push_back(new Spell_summon_mon);
-    spells_known_.push_back(new Spell_pest);
-    spells_known_.push_back(new Spell_darkbolt);
-    spells_known_.push_back(spell_handling::random_spell_for_mon());
+    add_spell(SpellSkill::expert, SpellId::teleport);
+    add_spell(SpellSkill::expert, SpellId::heal);
+    add_spell(SpellSkill::expert, SpellId::summon);
+    add_spell(SpellSkill::expert, SpellId::pest);
+    add_spell(SpellSkill::expert, SpellId::darkbolt);
+    add_spell(SpellSkill::expert, SpellId::deafen);
+    add_spell(SpellSkill::expert, SpellId::spell_shield);
 
+    add_spell(SpellSkill::basic, SpellId::enfeeble);
+
+    // Make some treasures to drop
     for (int i = rnd::range(2, 3); i > 0; --i)
     {
-        inv_->put_in_backpack(item_factory::mk_random_scroll_or_potion(true, true));
+        inv_->put_in_backpack(
+            item_factory::mk_random_scroll_or_potion(true, true));
     }
 }
 
-void Leng_elder::on_std_turn_hook()
+void LengElder::on_std_turn_hook()
 {
     if (is_alive())
     {
-        aware_counter_ = 100;
+        aware_of_player_counter_ += 100;
 
         if (has_given_item_to_player_)
         {
-            bool blocked_los[MAP_W][MAP_H];
+            bool blocked_los[map_w][map_h];
 
-            const Rect fov_rect = fov::get_fov_rect(pos);
+             const R fov_rect = fov::get_fov_rect(pos);
 
-            map_parse::run(cell_check::Blocks_los(),
-                           blocked_los,
-                           Map_parse_mode::overwrite,
-                           fov_rect);
+             map_parsers::BlocksLos()
+                 .run(blocked_los,
+                      MapParseMode::overwrite,
+                      fov_rect);
 
             if (can_see_actor(*map::player, blocked_los))
             {
                 if (nr_turns_to_hostile_ <= 0)
                 {
                     msg_log::add("I am ripped to pieces!!!", clr_msg_bad);
-                    map::player->hit(999, Dmg_type::pure);
+                    map::player->hit(999, DmgType::pure);
                 }
                 else
                 {
@@ -1610,82 +2160,89 @@ void Leng_elder::on_std_turn_hook()
                 }
             }
         }
-        else //Has not given item to player
+        else // Has not given item to player
         {
-            const bool IS_PLAYER_SEE_ME = map::player->can_see_actor(*this);
-            const bool IS_PLAYER_ADJ    = utils::is_pos_adj(pos, map::player->pos, false);
+            const bool is_player_see_me = map::player->can_see_actor(*this);
 
-            if (IS_PLAYER_SEE_ME && IS_PLAYER_ADJ)
+            const bool is_player_adj = is_pos_adj(pos, map::player->pos, false);
+
+            if (is_player_see_me && is_player_adj)
             {
-                msg_log::add("I perceive a cloaked figure standing before me...",
-                             clr_white, false, More_prompt_on_msg::yes);
+                msg_log::add(
+                    "I perceive a cloaked figure standing before me...",
+                    clr_white,
+                    false,
+                    MorePromptOnMsg::yes);
 
-                msg_log::add("It is the Elder Hierophant of the Leng monastery, ");
+                msg_log::add(
+                    "It is the Elder Hierophant of the Leng monastery, ");
 
-                msg_log::add("the High Priest Not to Be Described.",
-                             clr_white, false, More_prompt_on_msg::yes);
+                msg_log::add(
+                    "the High Priest Not to Be Described.",
+                    clr_white,
+                    false,
+                    MorePromptOnMsg::yes);
 
-                popup::show_msg("", true, "");
-
-                //auto& inv = map::player->inv();
-                //TODO: Which item to give?
-                //inv.put_in_backpack(item_factory::mk(Item_id::hideous_mask));
+                // auto& inv = map::player->inv();
+                // TODO: Which item to give?
+                // inv.put_in_backpack(item_factory::mk(ItemId::hideous_mask));
 
                 has_given_item_to_player_ = true;
-                nr_turns_to_hostile_     = rnd::range(9, 11);
+                nr_turns_to_hostile_ = rnd::range(9, 11);
             }
         }
     }
 }
 
-void Leng_elder::mk_start_items()
+void LengElder::mk_start_items()
 {
 
 }
 
 void Ooze::on_std_turn_hook()
 {
-    if (is_alive())
+    if (is_alive() &&
+        !has_prop(PropId::burning))
     {
-        restore_hp(1, false, Verbosity::silent);
+        restore_hp(2, false, Verbosity::silent);
     }
 }
 
-void Ooze_black::mk_start_items()
+void OozeBlack::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::ooze_black_spew_pus));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::ooze_black_spew_pus));
 }
 
-void Ooze_clear::mk_start_items()
+void OozeClear::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::ooze_clear_spew_pus));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::ooze_clear_spew_pus));
 }
 
-void Ooze_putrid::mk_start_items()
+void OozePutrid::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::ooze_putrid_spew_pus));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::ooze_putrid_spew_pus));
 }
 
-void Ooze_poison::mk_start_items()
+void OozePoison::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::ooze_poison_spew_pus));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::ooze_poison_spew_pus));
 }
 
-void Color_oo_space::mk_start_items()
+void StrangeColor::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::color_oo_space_touch));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::strange_color_touch));
 }
 
-Did_action Color_oo_space::on_act()
+DidAction StrangeColor::on_act()
 {
     Rigid* r = map::cells[pos.x][pos.y].rigid;
 
     r->corrupt_color();
 
-    return Did_action::no;
+    return DidAction::no;
 }
 
-Clr Color_oo_space::clr()
+Clr StrangeColor::clr() const
 {
     Clr clr = clr_magenta_lgt;
 
@@ -1696,164 +2253,205 @@ Clr Color_oo_space::clr()
     return clr;
 }
 
-void Color_oo_space::on_std_turn_hook()
+void StrangeColor::on_std_turn_hook()
 {
-    if (is_alive())
+    if (!is_alive())
+    {
+        return;
+    }
+
+    if (!has_prop(PropId::burning))
     {
         restore_hp(1, false, Verbosity::silent);
+    }
 
-        if (map::player->can_see_actor(*this))
+    if (map::player->can_see_actor(*this))
+    {
+        if (!map::player->prop_handler().has_prop(PropId::confused))
         {
-            map::player->prop_handler().try_add(new Prop_confused(Prop_turns::std));
+            const std::string msg =
+                text_format::first_to_upper(name_the()) +
+                " bewilders me.";
+
+            msg_log::add(msg);
         }
+
+        const int nr_turns_confused = rnd::range(8, 12);
+
+        map::player->prop_handler().apply(
+            new PropConfused(PropTurns::specific, nr_turns_confused));
     }
 }
 
-Did_action Spider::on_act()
+DidAction Spider::on_act()
 {
-    return Did_action::no;
+    return DidAction::no;
 }
 
-void Green_spider::mk_start_items()
+void GreenSpider::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::green_spider_bite));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::green_spider_bite));
 }
 
-void White_spider::mk_start_items()
+void WhiteSpider::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::white_spider_bite));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::white_spider_bite));
 }
 
-void Red_spider::mk_start_items()
+void RedSpider::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::red_spider_bite));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::red_spider_bite));
 }
 
-void Shadow_spider::mk_start_items()
+void ShadowSpider::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::shadow_spider_bite));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::shadow_spider_bite));
 }
 
-void Leng_spider::mk_start_items()
+void LengSpider::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::leng_spider_bite));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::leng_spider_bite));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::leng_spider_bola));
 }
 
-void Pit_viper::mk_start_items()
+void PitViper::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::pit_viper_bite));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::pit_viper_bite));
 }
 
-void Spitting_cobra::mk_start_items()
+void SpittingCobra::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::spitting_cobra_bite));
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::spitting_cobra_spit));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::spitting_cobra_bite));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::spitting_cobra_spit));
 }
 
-void Black_mamba::mk_start_items()
+void BlackMamba::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::black_mamba_bite));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::black_mamba_bite));
 }
 
 void Wolf::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::wolf_bite));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::wolf_bite));
 }
 
-void Worm_mass::mk_start_items()
+void WormMass::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::worm_mass_bite));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::worm_mass_bite));
 }
 
-void Worm_mass::on_death()
+void WormMass::on_death()
 {
-    const int PCT_SPLIT = 47;
+    // Split into other worms on death. Splitting is only allowed if this is an
+    // "original" worm, i.e. not split from another, and if the worm is not
+    // destroyed "too hard" (e.g. by a near explosion or a sledge hammer), and
+    // if the worm is not burning.
 
-    if (rnd::percent(PCT_SPLIT) && (game_time::actors.size() < MAX_NR_ACTORS_ON_MAP))
+    if (!allow_split_ ||
+        (hp_ <= -10) ||
+        has_prop(PropId::burning) ||
+        map::cells[pos.x][pos.y].rigid->is_bottomless() ||
+        game_time::actors.size() >= max_nr_actors_on_map)
     {
-        std::vector<Actor_id> worm_ids(2, id());
+        return;
+    }
 
-        //If dying worm has a leader, set that worm as leader for spawned worms
-        Actor* leader = leader_ ? leader_ : nullptr;
+    //
+    // NOTE: If dying worm has a leader, that actor is set as leader for the
+    //       spawned worms
+    //
+    const auto summoned =
+        actor_factory::spawn(pos,
+                             {2, id()},
+                             MakeMonAware::yes,
+                             leader_);
 
-        std::vector<Mon*> summoned;
+    // If no leader has been set yet, assign the first worm as leader of the
+    // second
+    if (!leader_ && summoned.size() >= 2)
+    {
+        summoned[1]->leader_ = summoned[0];
+    }
 
-        actor_factory::summon(pos,
-                              worm_ids,
-                              Make_mon_aware::yes,
-                              leader,
-                              &summoned,
-                              Verbosity::silent);
+    for (Mon* const mon : summoned)
+    {
+        // Do not allow summoned worms to split again
+        static_cast<WormMass*>(mon)->allow_split_ = false;
 
-        assert(summoned.size() == 2);
-
-        //If no leader has been set yet, assign the first worm as leader of the second
-        if (!leader && summoned.size() >= 2)
-        {
-            summoned[1]->leader_ = summoned[0];
-        }
+        // Do not allow summoned worms to attack immediately
+        mon->prop_handler().apply(
+            new PropDisabledAttack(PropTurns::specific, 1));
     }
 }
 
-Did_action Giant_locust::on_act()
+void MindWorms::mk_start_items()
 {
-    if (
-        is_alive()                                      &&
-        aware_counter_ > 0                              &&
-        game_time::actors.size() < MAX_NR_ACTORS_ON_MAP &&
-        rnd::one_in(spawn_new_one_in_n))
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::mind_worms_bite));
+}
+
+DidAction GiantLocust::on_act()
+{
+    if (!is_alive() ||
+        (aware_of_player_counter_ <= 0) ||
+        has_prop(PropId::burning) ||
+        (game_time::actors.size() >= max_nr_actors_on_map) ||
+        !rnd::one_in(spawn_new_one_in_n))
     {
-        bool blocked[MAP_W][MAP_H];
-
-        map_parse::run(cell_check::Blocks_actor(*this, true),
-                       blocked,
-                       Map_parse_mode::overwrite,
-                       Rect(pos - 1, pos + 1));
-
-        for (const P& d : dir_utils::dir_list)
-        {
-            const P p_adj(pos + d);
-
-            if (!blocked[p_adj.x][p_adj.y])
-            {
-                Actor* const actor = actor_factory::mk(data_->id, p_adj);
-
-                Giant_locust* const locust = static_cast<Giant_locust*>(actor);
-
-                spawn_new_one_in_n += 3;
-
-                locust->spawn_new_one_in_n  = spawn_new_one_in_n;
-                locust->aware_counter_      = aware_counter_;
-                locust->leader_             = leader_ ? leader_ : this;
-
-                game_time::tick();
-
-                return Did_action::yes;
-            }
-        }
+        return DidAction::no;
     }
 
-    return Did_action::no;
+    const MakeMonAware make_aware =
+        aware_of_player_counter_ > 0 ?
+        MakeMonAware::yes :
+        MakeMonAware::no;
+
+    Actor* const actor_to_set_as_leader = leader_ ? leader_ : this;
+
+    const auto summoned =
+        actor_factory::spawn(pos,
+                             {id()},
+                             make_aware,
+                             actor_to_set_as_leader);
+
+    if (summoned.empty())
+    {
+        return DidAction::no;
+    }
+
+    spawn_new_one_in_n += 4;
+
+    for (auto* const mon : summoned)
+    {
+        auto* const locust = static_cast<GiantLocust*>(mon);
+
+        locust->spawn_new_one_in_n = spawn_new_one_in_n;
+    }
+
+    game_time::tick();
+
+    return DidAction::yes;
 }
 
-void Giant_locust::mk_start_items()
+void GiantLocust::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::giant_locust_bite));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::giant_locust_bite));
 }
 
-Did_action Lord_of_shadows::on_act()
+DidAction LordOfShadows::on_act()
 {
-    return Did_action::no;
+    return DidAction::no;
 }
 
-void Lord_of_shadows::mk_start_items()
+void LordOfShadows::mk_start_items()
 {
 
 }
 
-Did_action Lord_of_spiders::on_act()
+DidAction LordOfSpiders::on_act()
 {
-    if (is_alive() && aware_counter_ > 0 && rnd::coin_toss())
+    if (is_alive() &&
+        (aware_of_player_counter_ > 0) &&
+        rnd::coin_toss())
     {
         const P player_pos = map::player->pos;
 
@@ -1875,206 +2473,249 @@ Did_action Lord_of_spiders::on_act()
                     if (feature_here->can_have_rigid())
                     {
                         auto& d = feature_data::data(feature_here->id());
-                        const auto* const mimic = static_cast<Rigid*>(d.mk_obj(p));
-                        Trap* const f = new Trap(p, mimic, Trap_id::web);
+
+                        auto* const mimic = static_cast<Rigid*>(d.mk_obj(p));
+
+                        Trap* const f = new Trap(p, mimic, TrapId::web);
+
                         map::put(f);
-                        f->reveal(false);
+
+                        f->reveal(Verbosity::silent);
                     }
                 }
             }
         }
     }
 
-    return Did_action::no;
+    return DidAction::no;
 }
 
-void Lord_of_spiders::mk_start_items()
+void LordOfSpiders::mk_start_items()
 {
 
 }
 
-Did_action Lord_of_spirits::on_act()
+DidAction LordOfSpirits::on_act()
 {
-    return Did_action::no;
+    return DidAction::no;
 }
 
-void Lord_of_spirits::mk_start_items()
-{
-
-}
-
-Did_action Lord_of_pestilence::on_act()
-{
-    return Did_action::no;
-}
-
-void Lord_of_pestilence::mk_start_items()
+void LordOfSpirits::mk_start_items()
 {
 
 }
 
-Did_action Zombie::on_act()
+DidAction LordOfPestilence::on_act()
+{
+    return DidAction::no;
+}
+
+void LordOfPestilence::mk_start_items()
+{
+
+}
+
+DidAction Zombie::on_act()
 {
     return try_resurrect();
 }
 
-Did_action Zombie::try_resurrect()
+DidAction Zombie::try_resurrect()
 {
     if (!is_corpse() || has_resurrected)
     {
-        return Did_action::no;
+        return DidAction::no;
     }
 
-    const int MIN_NR_TURNS_UNTIL_RISE   = 3;
-    const int RISE_ONE_IN_N_TURNS       = 8;
+    const int min_nr_turns_until_rise = 3;
 
-    if (dead_turn_counter < MIN_NR_TURNS_UNTIL_RISE)
+    const int rise_one_in_n = 11;
+
+    if (dead_turn_counter < min_nr_turns_until_rise)
     {
         ++dead_turn_counter;
     }
-    else if (rnd::one_in(RISE_ONE_IN_N_TURNS))
+    else if (rnd::one_in(rise_one_in_n))
     {
-        Actor* actor = utils::actor_at_pos(pos);
+        Actor* actor = map::actor_at_pos(pos);
 
         if (!actor)
         {
-            state_  = Actor_state::alive;
-            hp_     = (hp_max(true) * 3) / 4;
-            glyph_  = data_->glyph;
-            tile_   = data_->tile;
-            clr_    = data_->color;
+            state_ = ActorState::alive;
+
+            hp_ = (hp_max(true) / 2);
 
             has_resurrected = true;
 
-            data_->nr_kills--;
+            --data_->nr_kills;
 
             if (map::cells[pos.x][pos.y].is_seen_by_player)
             {
-                msg_log::add(corpse_name_the() + " rises again!!", clr_white, true);
 
-                map::player->incr_shock(Shock_lvl::some, Shock_src::see_mon);
+                msg_log::add(text_format::first_to_upper(corpse_name_the()) +
+                             " rises again!!",
+                             clr_text,
+                             true);
+
+                map::player->incr_shock(ShockLvl::frightening,
+                                        ShockSrc::see_mon);
             }
 
-            aware_counter_ = data_->nr_turns_aware * 2;
+            aware_of_player_counter_ += data_->nr_turns_aware * 4;
+
+            wary_of_player_counter_ = aware_of_player_counter_;
 
             game_time::tick();
 
-            return Did_action::yes;
+            return DidAction::yes;
         }
     }
 
-    return Did_action::no;
+    return DidAction::no;
 }
 
 void Zombie::on_death()
 {
-    //If resurrected once and has corpse, blow up the corpse
+    //
+    // If resurrected once and has corpse, blow up the corpse
+    //
     if (has_resurrected && is_corpse())
     {
-        state_ = Actor_state::destroyed;
+        destroy();
+
         map::mk_blood(pos);
         map::mk_gore(pos);
     }
 
-    //If corpse is destroyed, occasionally spawn Zombie parts. Spawning is only allowed if the
-    //corpse is not destroyed "too hard" (e.g. by a near explosion or a sledge hammer). This also
-    //serves to reward heavy weapons, since they will more often prevent spawning nasty stuff.
+    const int summon_one_in_n = 5;
 
-    const int SUMMON_ONE_IN_N = 7;
-
-    if (state_ == Actor_state::destroyed && hp_ > -10 && rnd::one_in(SUMMON_ONE_IN_N))
+    // Are we destroyed now? (By a strong attack, or by getting killed twice)
+    if (state_ == ActorState::destroyed)
     {
-        Actor_id id_to_spawn = Actor_id::END;
-
-        //With a small chance, spawn a Floating Head, otherwise spawn Hands or Intestines
-        const int ROLL = rnd::one_in(50) ? 3 : rnd::range(1, 2);
-
-        const std::string my_name = name_the();
-
-        std::string spawn_msg = "";
-
-        if (ROLL == 1)
+        //
+        // If corpse is destroyed, occasionally spawn Zombie parts. Spawning is
+        // only allowed if the corpse is not destroyed "too hard" (e.g. by a
+        // near explosion or a sledge hammer). This also serves to reward heavy
+        // weapons, since they will more often prevent spawning nasty stuff.
+        //
+        if ((hp_ > -8) &&
+            !map::cells[pos.x][pos.y].rigid->is_bottomless() &&
+            rnd::one_in(summon_one_in_n))
         {
-            id_to_spawn = Actor_id::crawling_hand;
+            ActorId id_to_spawn = ActorId::END;
 
-            spawn_msg = "The hand of " + my_name + " comes off and starts crawling around!";
-        }
-        else if (ROLL == 2)
-        {
-            id_to_spawn = Actor_id::crawling_intestines;
+            // With a small chance, spawn a Floating Skull, otherwise spawn
+            // Hands or Intestines
+            const int roll =
+                rnd::one_in(50) ?
+                3 :
+                rnd::range(1, 2);
 
-            spawn_msg = "The intestines of " + my_name + " starts crawling around!";
-        }
-        else
-        {
-            id_to_spawn = Actor_id::floating_head;
+            const std::string my_name = name_the();
 
-            spawn_msg = "The head of " + my_name + " starts floating around!";
-        }
+            std::string spawn_msg = "";
 
-        if (map::cells[pos.x][pos.y].is_seen_by_player)
-        {
-            assert(!spawn_msg.empty());
+            if (roll == 1)
+            {
+                id_to_spawn = ActorId::crawling_hand;
 
-            msg_log::add(spawn_msg);
+                spawn_msg =
+                    "The hand of " +
+                    my_name +
+                    " comes off and starts crawling around!";
+            }
+            else if (roll == 2)
+            {
+                id_to_spawn = ActorId::crawling_intestines;
 
-            map::player->incr_shock(Shock_lvl::some, Shock_src::see_mon);
-        }
+                spawn_msg =
+                    "The intestines of " +
+                    my_name +
+                    " starts crawling around!";
+            }
+            else
+            {
+                id_to_spawn = ActorId::floating_skull;
 
-        assert(id_to_spawn != Actor_id::END);
+                spawn_msg =
+                    "The head of " +
+                    my_name +
+                    " starts floating around!";
+            }
 
-        actor_factory::summon(pos,
-        {id_to_spawn},
-        Make_mon_aware::yes,
-        nullptr,
-        nullptr,
-        Verbosity::silent);
+            if (map::cells[pos.x][pos.y].is_seen_by_player)
+            {
+                ASSERT(!spawn_msg.empty());
 
-        render::draw_map_and_interface();
+                msg_log::add(spawn_msg);
+
+                map::player->incr_shock(ShockLvl::frightening,
+                                        ShockSrc::see_mon);
+            }
+
+            ASSERT(id_to_spawn != ActorId::END);
+
+            actor_factory::spawn(pos, {id_to_spawn},
+                                 MakeMonAware::yes,
+                                 nullptr);
+
+        } // if spawn zombie parts
     }
 }
 
-void Zombie_claw::mk_start_items()
+void Zombie::on_destroyed()
+{
+    //
+    // Occasionally make Zombie Dust
+    //
+    const int mk_dust_one_in_n = 7;
+
+    if (!map::cells[pos.x][pos.y].rigid->is_bottomless() &&
+        rnd::one_in(mk_dust_one_in_n))
+    {
+        item_factory::mk_item_on_floor(ItemId::zombie_dust, pos);
+    }
+}
+
+void ZombieClaw::mk_start_items()
 {
     Item* item = nullptr;
 
-    if (rnd::percent() < 20)
-    {
-        item = item_factory::mk(Item_id::zombie_claw_diseased);
-    }
-    else //Not diseased
-    {
-        item = item_factory::mk(Item_id::zombie_claw);
-    }
+    item = item_factory::mk(ItemId::zombie_claw);
 
     inv_->put_in_intrinsics(item);
 }
 
-void Zombie_axe::mk_start_items()
+void ZombieAxe::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::zombie_axe));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::zombie_axe));
 }
 
-void Bloated_zombie::mk_start_items()
+void BloatedZombie::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::bloated_zombie_punch));
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::bloated_zombie_spit));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::bloated_zombie_punch));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::bloated_zombie_spit));
 }
 
-Did_action Major_clapham_lee::on_act()
+DidAction MajorClaphamLee::on_act()
 {
-    if (try_resurrect() == Did_action::yes)
+    if (try_resurrect() == DidAction::yes)
     {
-        return Did_action::yes;
+        return DidAction::yes;
     }
 
-    if (is_alive() && aware_counter_ > 0 && !has_summoned_tomb_legions)
+    if (is_alive() &&
+        (aware_of_player_counter_ > 0) &&
+        !has_summoned_tomb_legions)
     {
-        bool blocked_los[MAP_W][MAP_H];
+        bool blocked_los[map_w][map_h];
 
-        const Rect fov_rect = fov::get_fov_rect(pos);
+         const R fov_rect = fov::get_fov_rect(pos);
 
-        map_parse::run(cell_check::Blocks_los(), blocked_los, Map_parse_mode::overwrite, fov_rect);
+        map_parsers::BlocksLos()
+            .run(blocked_los,
+                 MapParseMode::overwrite,
+                 fov_rect);
 
         if (can_see_actor(*(map::player), blocked_los))
         {
@@ -2082,217 +2723,242 @@ Did_action Major_clapham_lee::on_act()
 
             msg_log::add("Major Clapham Lee calls forth his Tomb-Legions!");
 
-            std::vector<Actor_id> mon_ids = {Actor_id::dean_halsey};
+            std::vector<ActorId> mon_ids = {ActorId::dean_halsey};
 
-            const int NR_OF_EXTRA_SPAWNS = 4;
+            const int nr_of_extra_spawns = 4;
 
-            for (int i = 0; i < NR_OF_EXTRA_SPAWNS; ++i)
+            for (int i = 0; i < nr_of_extra_spawns; ++i)
             {
-                const int ZOMBIE_TYPE = rnd::range(1, 3);
+                const int zombie_type = rnd::range(1, 3);
 
-                Actor_id mon_id = Actor_id::zombie;
+                ActorId mon_id = ActorId::zombie;
 
-                switch (ZOMBIE_TYPE)
+                switch (zombie_type)
                 {
                 case 1:
-                    mon_id = Actor_id::zombie;
+                    mon_id = ActorId::zombie;
                     break;
 
                 case 2:
-                    mon_id = Actor_id::zombie_axe;
+                    mon_id = ActorId::zombie_axe;
                     break;
 
                 case 3:
-                    mon_id = Actor_id::bloated_zombie;
+                    mon_id = ActorId::bloated_zombie;
                     break;
                 }
 
                 mon_ids.push_back(mon_id);
             }
 
-            actor_factory::summon(pos, mon_ids, Make_mon_aware::yes, this);
+            auto spawned =
+                actor_factory::spawn(pos, mon_ids,
+                                     MakeMonAware::yes,
+                                     this);
 
-            render::draw_map_and_interface();
+            for (auto* mon : spawned)
+            {
+                // Do not print a separate "feeling" for spawned monsters
+                mon->is_player_feeling_msg_allowed_ = true;
+
+                mon->prop_handler().apply(
+                    new PropSummoned(PropTurns::indefinite));
+            }
 
             has_summoned_tomb_legions = true;
 
-            map::player->incr_shock(Shock_lvl::heavy, Shock_src::misc);
+            map::player->incr_shock(ShockLvl::terrifying,
+                                    ShockSrc::misc);
 
             game_time::tick();
 
-            return Did_action::yes;
+            return DidAction::yes;
         }
     }
 
-    return Did_action::no;
+    return DidAction::no;
 }
 
-void Crawling_intestines::mk_start_items()
+void CrawlingIntestines::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::crawling_intestines_strangle));
+    inv_->put_in_intrinsics(
+        item_factory::mk(ItemId::crawling_intestines_strangle));
 }
 
-void Crawling_hand::mk_start_items()
+void CrawlingHand::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::crawling_hand_strangle));
+    inv_->put_in_intrinsics(
+        item_factory::mk(ItemId::crawling_hand_strangle));
 }
 
 void Thing::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::thing_strangle));
-    spells_known_.push_back(new Spell_teleport);
+    inv_->put_in_intrinsics(
+        item_factory::mk(ItemId::thing_strangle));
+
+    add_spell(SpellSkill::basic, SpellId::teleport);
 }
 
-void Floating_head::mk_start_items()
+void FloatingSkull::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::floating_head_bite));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::floating_skull_bite));
 }
 
-Did_action Floating_head::on_act()
+DidAction FloatingSkull::on_act()
 {
-    if (is_alive() && rnd::one_in(12))
+    if (is_alive() &&
+        (aware_of_player_counter_ > 0) &&
+        rnd::one_in(3))
     {
-        bool blocked_los[MAP_W][MAP_H];
+        bool blocked_los[map_w][map_h];
 
-        const Rect fov_rect = fov::get_fov_rect(pos);
+         const R fov_rect = fov::get_fov_rect(pos);
 
-        map_parse::run(cell_check::Blocks_los(),
-                       blocked_los,
-                       Map_parse_mode::overwrite,
-                       fov_rect);
+        map_parsers::BlocksLos()
+            .run(blocked_los,
+                 MapParseMode::overwrite,
+                 fov_rect);
 
         if (can_see_actor(*map::player, blocked_los))
         {
-            const std::string name = name_the();
+            const bool player_see_me = map::player->can_see_actor(*this);
 
-            const bool PLAYER_SEE_ME = map::player->can_see_actor(*this);
-
-            std::string snd_msg = PLAYER_SEE_ME ? name : "Someone";
+            std::string snd_msg =
+                player_see_me ?
+                text_format::first_to_upper(name_the()) :
+                "Someone";
 
             snd_msg += " spews forth a litany of curses.";
 
             Snd snd(snd_msg,
-                    Sfx_id::END,
-                    Ignore_msg_if_origin_seen::no,
+                    SfxId::END,
+                    IgnoreMsgIfOriginSeen::no,
                     pos,
                     this,
-                    Snd_vol::high,
-                    Alerts_mon::no);
+                    SndVol::high,
+                    AlertsMon::no);
 
             snd_emit::run(snd);
 
-            Prop* const prop = new Prop_cursed(Prop_turns::std);
+            Prop* const prop = new PropCursed(PropTurns::std);
 
-            map::player->prop_handler().try_add(prop, Prop_src::intr);
+            map::player->prop_handler().apply(prop, PropSrc::intr);
 
-            return Did_action::yes;
+            return DidAction::yes;
         }
     }
 
-    return Did_action::no;
+    return DidAction::no;
 }
 
-Did_action Mold::on_act()
+DidAction Mold::on_act()
 {
-    if (
-        is_alive()                                      &&
-        game_time::actors.size() < MAX_NR_ACTORS_ON_MAP &&
-        rnd::one_in(spawn_new_one_in_n))
+    if (!is_alive() ||
+        (game_time::actors.size() >= max_nr_actors_on_map) ||
+        !rnd::one_in(spawn_new_one_in_n))
     {
-        bool blocked[MAP_W][MAP_H];
-
-        map_parse::run(cell_check::Blocks_actor(*this, true),
-                       blocked,
-                       Map_parse_mode::overwrite,
-                       Rect(pos - 1, pos + 1));
-
-        for (const P& d : dir_utils::dir_list)
-        {
-            const P adj_pos(pos + d);
-
-            if (!blocked[adj_pos.x][adj_pos.y])
-            {
-                Actor* const  actor     = actor_factory::mk(data_->id, adj_pos);
-                Mold* const   mold      = static_cast<Mold*>(actor);
-                mold->aware_counter_    = aware_counter_;
-                mold->leader_           = leader_ ? leader_ : this;
-                game_time::tick();
-                return Did_action::yes;
-            }
-        }
+        return DidAction::no;
     }
 
-    return Did_action::no;
+    const MakeMonAware make_aware =
+        aware_of_player_counter_ > 0 ?
+        MakeMonAware::yes :
+        MakeMonAware::no;
+
+    Actor* const actor_to_set_as_leader = leader_ ? leader_ : this;
+
+    actor_factory::spawn(pos,
+                         {id()},
+                         make_aware,
+                         actor_to_set_as_leader);
+
+    game_time::tick();
+
+    return DidAction::yes;
 }
 
 void Mold::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::mold_spores));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::mold_spores));
 }
 
-void Gas_spore::on_death()
+void GasSpore::on_death()
 {
-    explosion::run(pos, Expl_type::expl);
+    TRACE_FUNC_BEGIN;
+
+    explosion::run(pos, ExplType::expl);
+
+    TRACE_FUNC_END;
 }
 
-The_high_priest::The_high_priest() :
+TheHighPriest::TheHighPriest() :
     Mon                 (),
-    has_greeted_player_ (false) {}
+    has_become_aware_   (false) {}
 
-void The_high_priest::mk_start_items()
+void TheHighPriest::mk_start_items()
 {
-    inv_->put_in_intrinsics(item_factory::mk(Item_id::the_high_priest_claw));
+    inv_->put_in_intrinsics(item_factory::mk(ItemId::the_high_priest_claw));
 
-    spells_known_.push_back(new Spell_summon_mon());
-    spells_known_.push_back(new Spell_burn());
-    spells_known_.push_back(new Spell_paralyze_mon());
-    spells_known_.push_back(new Spell_mi_go_hypno());
-    spells_known_.push_back(new Spell_pest());
-    spells_known_.push_back(new Spell_knock_back());
+    add_spell(SpellSkill::master, SpellId::darkbolt);
+    add_spell(SpellSkill::master, SpellId::summon);
+    add_spell(SpellSkill::master, SpellId::burn);
+    add_spell(SpellSkill::master, SpellId::pest);
+    add_spell(SpellSkill::master, SpellId::spell_shield);
+    add_spell(SpellSkill::master, SpellId::disease);
+
+    add_spell(SpellSkill::expert, SpellId::enfeeble);
 }
 
-void The_high_priest::on_death()
+void TheHighPriest::on_death()
 {
     msg_log::add("The ground rumbles...",
                  clr_white,
                  false,
-                 More_prompt_on_msg::yes);
+                 MorePromptOnMsg::yes);
 
-    const P stair_pos(MAP_W - 2, 11);
+    const P stair_pos(map_w - 2, 11);
 
     map::put(new Stairs(stair_pos));
-    map::put(new Rubble_low(stair_pos - P(1, 0)));
 
-    map::player->update_fov();
-    render::draw_map_and_interface();
+    map::put(new RubbleLow(stair_pos - P(1, 0)));
+
+    const size_t nr_snakes = rnd::range(4, 5);
+
+    actor_factory::spawn(
+        pos,
+        {nr_snakes, ActorId::pit_viper});
 }
 
-void The_high_priest::on_std_turn_hook()
+void TheHighPriest::on_std_turn_hook()
 {
 
 }
 
-Did_action The_high_priest::on_act()
+DidAction TheHighPriest::on_act()
 {
     if (!is_alive())
     {
-        return Did_action::no;
+        return DidAction::no;
     }
 
-    if (!has_greeted_player_)
+    if (!has_become_aware_)
     {
-        map::player->update_fov();
-        render::draw_map_and_interface();
+        audio::play(SfxId::boss_voice1);
 
-        msg_log::add("A booming voice echoes through the halls.",
-                     clr_white,
-                     false,
-                     More_prompt_on_msg::yes);
+        has_become_aware_ = true;
 
-        audio::play(Sfx_id::boss_voice1);
+        become_aware_player(false);
 
-        has_greeted_player_ = true;
-        aware_counter_      = data_->nr_turns_aware;
+        for (auto* const actor : game_time::actors)
+        {
+            if (actor->is_player() ||
+                (actor == this))
+            {
+                continue;
+            }
+
+            static_cast<Mon*>(actor)->become_aware_player(false);
+        }
     }
 
     if (rnd::coin_toss())
@@ -2301,101 +2967,135 @@ Did_action The_high_priest::on_act()
         map::cells[pos.x][pos.y].rigid->try_put_gore();
     }
 
-    return Did_action::no;
+    return DidAction::no;
 }
 
-Animated_wpn::Animated_wpn() :
-    Mon                     (),
-    nr_turns_until_drop_    (rnd::range(75, 125)) {}
-
-std::string Animated_wpn::name_the() const
+void HighPriestGuardWarVet::mk_start_items()
 {
-    Item* item = inv_->item_in_slot(Slot_id::wpn);
+    inv_->put_in_slot(
+        SlotId::wpn,
+        item_factory::mk(ItemId::machine_gun),
+        Verbosity::silent);
+}
 
-    assert(item);
+void HighPriestGuardRogue::mk_start_items()
+{
+    Item* const machete = item_factory::mk(ItemId::machete);
 
-    const std::string name = item->name(Item_ref_type::plain,
-                                        Item_ref_inf::yes,
-                                        Item_ref_att_inf::none);
+    static_cast<Wpn*>(machete)->melee_dmg_plus_ = 1;
+
+    inv_->put_in_slot(
+        SlotId::wpn,
+        machete,
+        Verbosity::silent);
+}
+
+void HighPriestGuardGhoul::mk_start_items()
+{
+    inv_->put_in_intrinsics(
+        item_factory::mk(ItemId::high_priest_guard_ghoul_claw));
+}
+
+AnimatedWpn::AnimatedWpn() :
+    Mon                     (),
+    nr_turns_until_drop_    (rnd::range(225, 250)) {}
+
+void AnimatedWpn::on_death()
+{
+    inv_->remove_item_in_slot(SlotId::wpn,
+                              true); // Delete the item
+}
+
+std::string AnimatedWpn::name_the() const
+{
+    Item* item = inv_->item_in_slot(SlotId::wpn);
+
+    ASSERT(item);
+
+    const std::string name = item->name(ItemRefType::plain,
+                                        ItemRefInf::yes,
+                                        ItemRefAttInf::none);
 
     return "The floating " + name;
 }
 
-std::string Animated_wpn::name_a() const
+std::string AnimatedWpn::name_a() const
 {
-    Item* item = inv_->item_in_slot(Slot_id::wpn);
+    Item* item = inv_->item_in_slot(SlotId::wpn);
 
-    assert(item);
+    ASSERT(item);
 
-    const std::string name = item->name(Item_ref_type::plain,
-                                        Item_ref_inf::yes,
-                                        Item_ref_att_inf::none);
+    const std::string name = item->name(ItemRefType::plain,
+                                        ItemRefInf::yes,
+                                        ItemRefAttInf::none);
 
     return "A floating " + name;
 }
 
-char Animated_wpn::glyph() const
+char AnimatedWpn::glyph() const
 {
-    Item* item = inv_->item_in_slot(Slot_id::wpn);
+    Item* item = inv_->item_in_slot(SlotId::wpn);
 
-    assert(item);
+    ASSERT(item);
 
     return item->glyph();
 }
 
-Clr Animated_wpn::clr()
+Clr AnimatedWpn::clr() const
 {
-    Item* item = inv_->item_in_slot(Slot_id::wpn);
+    Item* item = inv_->item_in_slot(SlotId::wpn);
 
-    assert(item);
+    ASSERT(item);
 
     return item->clr();
 }
 
-Tile_id Animated_wpn::tile() const
+TileId AnimatedWpn::tile() const
 {
-    Item* item = inv_->item_in_slot(Slot_id::wpn);
+    Item* item = inv_->item_in_slot(SlotId::wpn);
 
-    assert(item);
+    ASSERT(item);
 
     return item->tile();
 }
 
-std::string Animated_wpn::descr() const
+std::string AnimatedWpn::descr() const
 {
-    Item* item = inv_->item_in_slot(Slot_id::wpn);
+    Item* item = inv_->item_in_slot(SlotId::wpn);
 
-    assert(item);
+    ASSERT(item);
 
-    std::string name = item->name(Item_ref_type::a,
-                                  Item_ref_inf::yes,
-                                  Item_ref_att_inf::none);
+    std::string str = item->name(ItemRefType::a,
+                                 ItemRefInf::yes,
+                                 ItemRefAttInf::none);
 
-    text_format::first_to_upper(name);
+    str = text_format::first_to_upper(str);
 
-    return name + ", floating through the air as if wielded by some invisible hand.";
+    str += ", floating through the air as if wielded by some invisible hand.";
+
+    return str;
 }
 
-std::string Animated_wpn::death_msg() const
+std::string AnimatedWpn::death_msg() const
 {
-    Item* item = inv_->item_in_slot(Slot_id::wpn);
+    Item* item = inv_->item_in_slot(SlotId::wpn);
+
+    ASSERT(item);
 
     if (!item)
     {
-        assert(false);
-
-        //Release build robustness
         return "";
     }
 
-    const std::string name = item->name(Item_ref_type::plain,
-                                        Item_ref_inf::yes,
-                                        Item_ref_att_inf::none);
+    const std::string name =
+        item->name(ItemRefType::plain,
+                   ItemRefInf::yes,
+                   ItemRefAttInf::none);
 
-    return "The " + name + " suddenly becomes lifeless and drops down.";
+    return "The " + name + " is destroyed.";
 }
 
-void Animated_wpn::on_std_turn_hook()
+void AnimatedWpn::on_std_turn_hook()
 {
     if (!is_alive())
     {
@@ -2404,10 +3104,47 @@ void Animated_wpn::on_std_turn_hook()
 
     if (nr_turns_until_drop_ <= 0)
     {
-        die(true, false, true);
+        drop();
     }
-    else //Not yet time to die
+    else // Not yet time to die
     {
         --nr_turns_until_drop_;
+    }
+}
+
+void AnimatedWpn::drop()
+{
+    if (map::player->can_see_actor(*this))
+    {
+        Item* item = inv_->item_in_slot(SlotId::wpn);
+
+        ASSERT(item);
+
+        if (item)
+        {
+            const std::string name =
+                item->name(ItemRefType::plain,
+                           ItemRefInf::yes,
+                           ItemRefAttInf::none);
+
+            std::string msg =
+                "The " +
+                name +
+                " suddenly becomes lifeless and drops down.";
+
+            msg_log::add(msg);
+        }
+    }
+
+    destroy_silent();
+
+    Item* item = inv_->remove_item_in_slot(SlotId::wpn,
+                                           false); // Do not delete the item
+
+    ASSERT(item);
+
+    if (item)
+    {
+        item_drop::drop_item_on_map(pos, *item);
     }
 }

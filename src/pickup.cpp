@@ -13,94 +13,69 @@
 #include "game_time.hpp"
 #include "audio.hpp"
 
-using namespace std;
-
 namespace item_pickup
 {
 
-namespace
-{
-
-void pickup_effects(Actor* actor, Item* item)
-{
-    (void)actor;
-    (void)item;
-}
-
-} //namespace
-
 void try_pick()
 {
-    const P&  pos   = map::player->pos;
-    Item* const item  = map::cells[pos.x][pos.y].item;
+    msg_log::clear();
 
-    if (item)
+    const P& pos = map::player->pos;
+
+    Item* const item = map::cells[pos.x][pos.y].item;
+
+    if (!item)
     {
-        Inventory&      player_inv  = map::player->inv();
-        const string    ITEM_NAME   = item->name(Item_ref_type::plural);
-
-        //First try to add it to carried item stack in thrown slot.
-        Item* const carried_missile = player_inv.item_in_slot(Slot_id::thrown);
-
-        if (
-            item->data().is_stackable   &&
-            carried_missile             &&
-            item->id() == carried_missile->data().id)
-        {
-            audio::play(Sfx_id::pickup);
-
-            msg_log::add("I add " + ITEM_NAME + " to my missile stack.");
-            carried_missile->nr_items_ += item->nr_items_;
-            delete item;
-            map::cells[pos.x][pos.y].item = nullptr;
-            game_time::tick();
-            return;
-        }
-
-        audio::play(Sfx_id::pickup);
-
-        msg_log::clear();
-        msg_log::add("I pick up " + ITEM_NAME + ".");
-
-        //Calls the itemps ickup hook
-        //NOTE: This may destroy the item (e.g. combine with others)
-        player_inv.put_in_backpack(item);
-
-        map::cells[pos.x][pos.y].item = nullptr;
-
-        game_time::tick();
-    }
-    else //No item in this cell
-    {
-        msg_log::clear();
         msg_log::add("I see nothing to pick up here.");
+
+        return;
     }
+
+    Inventory& inv = map::player->inv();
+
+    const std::string item_name = item->name(ItemRefType::plural);
+
+    audio::play(SfxId::pickup);
+
+    msg_log::add("I pick up " + item_name + ".");
+
+    //
+    // NOTE: This calls the items pickup hook, which may destroy the item
+    //       (e.g. combine with others)
+    //
+    inv.put_in_backpack(item);
+
+    map::cells[pos.x][pos.y].item = nullptr;
+
+    game_time::tick();
 }
 
 Ammo* unload_ranged_wpn(Wpn& wpn)
 {
-    assert(!wpn.data().ranged.has_infinite_ammo);
+    ASSERT(!wpn.data().ranged.has_infinite_ammo);
 
-    const int NR_AMMO_LOADED = wpn.nr_ammo_loaded_;
+    const int nr_ammo_loaded = wpn.nr_ammo_loaded_;
 
-    if (NR_AMMO_LOADED == 0)
+    if (nr_ammo_loaded == 0)
     {
         return nullptr;
     }
 
-    const Item_id   ammo_id         = wpn.data().ranged.ammo_item_id;
-    Item_data_t&    ammo_data       = item_data::data[int(ammo_id)];
-    Item*           spawned_ammo    = item_factory::mk(ammo_id);
+    const ItemId ammo_id = wpn.data().ranged.ammo_item_id;
 
-    if (ammo_data.type == Item_type::ammo_mag)
+    ItemDataT& ammo_data = item_data::data[(size_t)ammo_id];
+
+    Item* spawned_ammo = item_factory::mk(ammo_id);
+
+    if (ammo_data.type == ItemType::ammo_mag)
     {
-        //Unload a mag
-        static_cast<Ammo_mag*>(spawned_ammo)->ammo_ = NR_AMMO_LOADED;
+        // Unload a mag
+        static_cast<AmmoMag*>(spawned_ammo)->ammo_ = nr_ammo_loaded;
     }
     else
     {
-        //Unload loose ammo
-        spawned_ammo->nr_items_ = NR_AMMO_LOADED;
+        // Unload loose ammo
+        spawned_ammo->nr_items_ = nr_ammo_loaded;
     }
 
     wpn.nr_ammo_loaded_ = 0;
@@ -118,7 +93,8 @@ void try_unload_wpn_or_pickup_ammo()
         {
             Wpn* const wpn = static_cast<Wpn*>(item);
 
-            const string wpn_name = wpn->name(Item_ref_type::a, Item_ref_inf::yes);
+            const std::string wpn_name =
+                wpn->name(ItemRefType::a, ItemRefInf::yes);
 
             if (!wpn->data().ranged.has_infinite_ammo)
             {
@@ -126,12 +102,12 @@ void try_unload_wpn_or_pickup_ammo()
 
                 if (spawned_ammo)
                 {
-                    audio::play(Sfx_id::pickup);
+                    audio::play(SfxId::pickup);
 
                     msg_log::add("I unload " + wpn_name + ".");
 
-                    //Calls items pickup hook
-                    //NOTE: This may destroy the item (e.g. combine with others)
+                    // Calls items pickup hook
+                    // NOTE: This may destroy the item (e.g. combining)
                     map::player->inv().put_in_backpack(spawned_ammo);
 
                     game_time::tick();
@@ -139,11 +115,10 @@ void try_unload_wpn_or_pickup_ammo()
                 }
             }
         }
-        else //Not a ranged weapon
+        else // Not a ranged weapon
         {
-            if (
-                item->data().type == Item_type::ammo ||
-                item->data().type == Item_type::ammo_mag)
+            if (item->data().type == ItemType::ammo ||
+                item->data().type == ItemType::ammo_mag)
             {
                 try_pick();
                 return;
@@ -154,4 +129,4 @@ void try_unload_wpn_or_pickup_ammo()
     msg_log::add("I see no ammo to unload or pick up here.");
 }
 
-} //Item_pickup
+} // item_pickup

@@ -4,92 +4,104 @@
 
 #include "actor_player.hpp"
 #include "player_bon.hpp"
-#include "utils.hpp"
 #include "properties.hpp"
 #include "map.hpp"
 
-int Ability_vals::val(const Ability_id id,
-                      const bool IS_AFFECTED_BY_PROPS,
-                      const Actor& actor) const
+int AbilityVals::val(const AbilityId id,
+                     const bool is_affected_by_props,
+                     const Actor& actor) const
 {
-    int ret = ability_list[size_t(id)];
+    int ret = ability_list[(size_t)id];
 
-    if (IS_AFFECTED_BY_PROPS)
+    if (actor.is_player())
+    {
+        ASSERT(ret == 0);
+    }
+
+    if (is_affected_by_props)
     {
         ret += actor.prop_handler().ability_mod(id);
     }
 
     if (actor.is_player())
     {
-        for (const Inv_slot& slot : actor.inv().slots_)
+        for (const InvSlot& slot : actor.inv().slots_)
         {
-            if (slot.item)
+            if (!slot.item)
             {
-                ret += slot.item->data().ability_mods_while_equipped[int(id)];
+                continue;
             }
+
+            auto& d = slot.item->data();
+
+            ret += d.ability_mods_while_equipped[(size_t)id];
         }
 
-        const int HP_PCT  = (actor.hp() * 100) / actor.hp_max(true);
+        const int hp_pct = (actor.hp() * 100) / actor.hp_max(true);
+
+        const int perseverant_bon_hp_pct = 50;
 
         switch (id)
         {
-        case Ability_id::searching:
-            ret += 8;
+        case AbilityId::searching:
+        {
+            ret += 10;
 
-            if (player_bon::traits[size_t(Trait::observant)])
+            if (player_bon::bg() == Bg::rogue)
             {
-                ret += 4;
+                ret += 10;
             }
+        }
+        break;
 
-            if (player_bon::traits[size_t(Trait::perceptive)])
-            {
-                ret += 4;
-            }
-            break;
-
-        case Ability_id::melee:
+        case AbilityId::melee:
+        {
             ret += 60;
 
-            if (player_bon::traits[size_t(Trait::adept_melee_fighter)])
+            if (player_bon::traits[(size_t)Trait::adept_melee_fighter])
             {
                 ret += 10;
             }
 
-            if (player_bon::traits[size_t(Trait::expert_melee_fighter)])
+            if (player_bon::traits[(size_t)Trait::expert_melee_fighter])
             {
                 ret += 10;
             }
 
-            if (player_bon::traits[size_t(Trait::master_melee_fighter)])
+            if (player_bon::traits[(size_t)Trait::master_melee_fighter])
             {
                 ret += 10;
             }
 
-            if (player_bon::traits[size_t(Trait::perseverant)] && HP_PCT <= 25)
+            if (player_bon::traits[(size_t)Trait::perseverant] &&
+                (hp_pct < perseverant_bon_hp_pct))
             {
                 ret += 30;
             }
-            break;
+        }
+        break;
 
-        case Ability_id::ranged:
-            ret += 50;
+        case AbilityId::ranged:
+        {
+            ret += 70;
 
-            if (player_bon::traits[size_t(Trait::adept_marksman)])
+            if (player_bon::traits[(size_t)Trait::adept_marksman])
             {
                 ret += 10;
             }
 
-            if (player_bon::traits[size_t(Trait::expert_marksman)])
+            if (player_bon::traits[(size_t)Trait::expert_marksman])
             {
                 ret += 10;
             }
 
-            if (player_bon::traits[size_t(Trait::master_marksman)])
+            if (player_bon::traits[(size_t)Trait::master_marksman])
             {
                 ret += 10;
             }
 
-            if (player_bon::traits[size_t(Trait::perseverant)] && HP_PCT <= 25)
+            if (player_bon::traits[(size_t)Trait::perseverant] &&
+                (hp_pct < perseverant_bon_hp_pct))
             {
                 ret += 30;
             }
@@ -98,145 +110,137 @@ int Ability_vals::val(const Ability_id id,
             {
                 ret -= 15;
             }
-            break;
+        }
+        break;
 
-        case Ability_id::dodge_trap:
-            ret += 5;
-
-            if (player_bon::traits[size_t(Trait::dexterous)])
+        case AbilityId::dodging:
+        {
+            if (player_bon::traits[(size_t)Trait::dexterous])
             {
-                ret += 25;
+                ret += 15;
             }
 
-            if (player_bon::traits[size_t(Trait::lithe)])
+            if (player_bon::traits[(size_t)Trait::lithe])
             {
-                ret += 25;
-            }
-            break;
-
-        case Ability_id::dodge_att:
-            ret += 10;
-
-            if (player_bon::traits[size_t(Trait::dexterous)])
-            {
-                ret += 25;
+                ret += 15;
             }
 
-            if (player_bon::traits[size_t(Trait::lithe)])
+            if (player_bon::traits[(size_t)Trait::perseverant] &&
+                (hp_pct < perseverant_bon_hp_pct))
             {
-                ret += 25;
+                ret += 30;
             }
+        }
+        break;
 
-            if (player_bon::traits[size_t(Trait::perseverant)] && HP_PCT <= 25)
+        case AbilityId::stealth:
+        {
+            if (player_bon::traits[(size_t)Trait::stealthy])
             {
                 ret += 50;
             }
-            break;
 
-        case Ability_id::stealth:
-            ret += 10;
-
-            if (player_bon::traits[size_t(Trait::stealthy)])
+            if (player_bon::traits[(size_t)Trait::imperceptible])
             {
-                ret += 30;
+                ret += 40;
             }
+        }
+        break;
 
-            if (player_bon::traits[size_t(Trait::imperceptible)])
-            {
-                ret += 30;
-            }
-            break;
-
-        case Ability_id::empty:
-        case Ability_id::END:
+        case AbilityId::empty:
+        case AbilityId::END:
             break;
         }
 
-        if (id == Ability_id::searching)
+        if (id == AbilityId::searching)
         {
-            //Searching must always be at least 1 to avoid trapping the player
-            ret = std::max(ret, 1);
-        }
-        else if (id == Ability_id::dodge_att)
-        {
-            //It should not be possible to dodge every attack
-            ret = std::min(ret, 95);
+            // Searching must ALWAYS be at least 1, to avoid trapping the player
+            ret = std::max(1, ret);
         }
     }
 
-    ret = std::max(0, ret);
+    // NOTE: Do NOT clamp the returned skill value here
 
     return ret;
 }
 
-void Ability_vals::reset()
+void AbilityVals::reset()
 {
-    for (int i = 0; i < int(Ability_id::END); ++i)
+    for (size_t i = 0; i < (size_t)AbilityId::END; ++i)
     {
         ability_list[i] = 0;
     }
 }
 
-void Ability_vals::set_val(const Ability_id ability, const int VAL)
+void AbilityVals::set_val(const AbilityId ability, const int val)
 {
-    ability_list[int(ability)] = VAL;
+    ability_list[(size_t)ability] = val;
 }
 
-void Ability_vals::change_val(const Ability_id ability, const int CHANGE)
+void AbilityVals::change_val(const AbilityId ability, const int change)
 {
-    ability_list[int(ability)] += CHANGE;
+    ability_list[(size_t)ability] += change;
 }
 
 namespace ability_roll
 {
 
-Ability_roll_result roll(const int TOT_SKILL_VALUE, const Actor* const actor_rolling)
+ActionResult roll(const int skill_value)
 {
-    const int ROLL = rnd::percent();
+    /*
+      Example:
+      ------------
+      Skill value = 50
 
-    const bool IS_CURSED    = actor_rolling && actor_rolling->has_prop(Prop_id::cursed);
-    const bool IS_BLESSED   = actor_rolling && actor_rolling->has_prop(Prop_id::blessed);
+        1 -   2     Critical success
+        3 -  25     Big success
+       26 -  50     Normal success
+       51 -  75     Normal fail
+       76 -  98     Big fail
+       99 - 100     Critical fail
+    */
 
-    //Critical success?
-    Range crit_success_range(1, 1);
+    const int succ_cri_lmt = 2;
+    const int succ_big_lmt = ceil((double)skill_value / 2.0);
+    const int succ_nrm_lmt = skill_value;
+    const int fail_nrm_lmt = ceil(100.0 - ((double)(100 - skill_value) / 2.0));
+    const int fail_big_lmt = 98;
 
-    if (IS_BLESSED)
+    const int roll = rnd::range(1, 100);
+
+    // NOTE: We check critical success and fail first, since they should
+    //       be completely unaffected by skill values - they can always
+    //       happen, and always have the same chance to happen, regardless
+    //       of skills
+    if (roll <= succ_cri_lmt)
     {
-        //Increase critical success range while blessed
-        crit_success_range.max = 5;
-    }
-    else if (IS_CURSED)
-    {
-        //Never critically succeed while cursed
-        crit_success_range.set(-1, -1);
-    }
-
-    if (utils::is_val_in_range(ROLL, crit_success_range))
-    {
-        return Ability_roll_result::success_critical;
-    }
-
-    //Critical fail?
-    Range crit_fail_range(100, 100);
-
-    if (IS_BLESSED)
-    {
-        //Never critically fail while blessed
-        crit_fail_range.set(-1, -1);
-    }
-    else if (IS_CURSED)
-    {
-        //Increase critical fail range while cursed
-        crit_fail_range.min = 95;
+        return ActionResult::success_critical;
     }
 
-    if (utils::is_val_in_range(ROLL, crit_fail_range))
+    if (roll > fail_big_lmt)
     {
-        return Ability_roll_result::fail_critical;
+        return ActionResult::fail_critical;
     }
 
-    return ROLL <= TOT_SKILL_VALUE ?
-           Ability_roll_result::success : Ability_roll_result::fail;
+    if (roll <= succ_big_lmt)
+    {
+        return ActionResult::success_big;
+    }
+
+    if (roll <= succ_nrm_lmt)
+    {
+        return ActionResult::success;
+    }
+
+    if (roll <= fail_nrm_lmt)
+    {
+        return ActionResult::fail;
+    }
+
+    // Sanity check:
+    ASSERT(roll <= fail_big_lmt);
+
+    return ActionResult::fail_big;
 }
 
-} //ability_roll
+} // ability_roll

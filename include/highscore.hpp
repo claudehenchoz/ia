@@ -1,31 +1,40 @@
-#ifndef HIGH_SCORE_H
-#define HIGH_SCORE_H
+#ifndef HIGHSCORE_HPP
+#define HIGHSCORE_HPP
 
 #include <vector>
 #include <string>
 
-#include "cmn_data.hpp"
+#include "state.hpp"
 #include "player_bon.hpp"
+#include "global.hpp"
+#include "browser.hpp"
 
-class Highscore_entry
+class HighscoreEntry
 {
 public:
-    Highscore_entry(std::string entry_date_and_time,
-                    std::string player_name,
-                    int player_xp,
-                    int player_lvl,
-                    int player_dlvl,
-                    int player_insanity,
-                    bool is_win_game,
-                    Bg player_bg);
+    HighscoreEntry(std::string game_summary_file_path,
+                   std::string entry_date,
+                   std::string player_name,
+                   int player_xp,
+                   int player_lvl,
+                   int player_dlvl,
+                   int turn_count,
+                   int player_insanity,
+                   IsWin is_win,
+                   Bg player_bg);
 
-    ~Highscore_entry() {}
+    ~HighscoreEntry();
 
     int score() const;
 
-    std::string date_and_time() const
+    std::string game_summary_file_path() const
     {
-        return date_and_time_;
+        return game_summary_file_path_;
+    }
+
+    std::string date() const
+    {
+        return date_;
     }
 
     std::string name() const
@@ -48,12 +57,17 @@ public:
         return dlvl_;
     }
 
+    int turn_count() const
+    {
+        return turn_count_;
+    }
+
     int ins() const
     {
         return ins_;
     }
 
-    bool is_win() const
+    IsWin is_win() const
     {
         return is_win_;
     }
@@ -64,9 +78,15 @@ public:
     }
 
 private:
-    std::string date_and_time_, name_;
-    int xp_, lvl_, dlvl_, ins_;
-    bool is_win_;
+    std::string game_summary_file_path_;
+    std::string date_;
+    std::string name_;
+    int xp_;
+    int lvl_;
+    int dlvl_;
+    int turn_count_;
+    int ins_;
+    IsWin is_win_;
     Bg bg_;
 };
 
@@ -76,14 +96,66 @@ namespace highscore
 void init();
 void cleanup();
 
-void run_highscore_screen();
+//
+// NOTE: All this does is construct a HighscoreEntry object, populated with
+//       highscore info based on the current game - it has no side effects
+//
+HighscoreEntry mk_entry_from_current_game_data(
+    const std::string game_summary_file_path,
+    const IsWin is_win);
 
-void on_game_over(const bool IS_WIN);
+void append_entry_to_highscores_file(const HighscoreEntry& entry);
 
-std::vector<Highscore_entry> entries_sorted();
+std::vector<HighscoreEntry> entries_sorted();
 
-const Highscore_entry* final_score();
+} // highscore
 
-} //highscore
+class BrowseHighscore: public State
+{
+public:
+    BrowseHighscore();
 
-#endif
+    void on_start() override;
+
+    void draw() override;
+
+    void update() override;
+
+    bool draw_overlayed() const override
+    {
+        // If there are no entries, we draw an overlayed popup
+        return entries_.empty();
+    }
+
+    StateId id() override;
+
+private:
+    std::vector<HighscoreEntry> entries_;
+
+    MenuBrowser browser_;
+};
+
+class BrowseHighscoreEntry: public State
+{
+public:
+    BrowseHighscoreEntry(const std::string& file_path);
+
+    void on_start() override;
+
+    void draw() override;
+
+    void update() override;
+
+    StateId id() override;
+
+private:
+    void read_file();
+
+    const std::string file_path_;
+
+    std::vector<std::string> lines_;
+
+    int top_idx_;
+};
+
+#endif // HIGHSCORE_HPP

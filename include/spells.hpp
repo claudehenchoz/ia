@@ -1,66 +1,82 @@
-#ifndef SPELLS_H
-#define SPELLS_H
+#ifndef SPELLS_HPP
+#define SPELLS_HPP
 
 #include <vector>
 #include <string>
 
 #include "item.hpp"
-#include "cmn_types.hpp"
 #include "properties.hpp"
 #include "player_bon.hpp"
 
 class Actor;
 class Mon;
 
-const std::string summon_warning_str =
-    "There is a small risk that whatever is summoned will be hostile to the caster. "
-    "Do not call up that which you cannot put down.";
-
-enum class Spell_id
+enum class SpellId
 {
-    //Available for player and all monsters
+    // Available for player and monsters
     darkbolt,
-    aza_wrath,
-    slow_mon,
-    terrify_mon,
-    paralyze_mon,
+    enfeeble,
     teleport,
     summon,
     pest,
+    heal,
+    spell_shield,
 
-    //Player only
+    // Player only
+    see_invis,
+    aza_wrath,
     mayhem,
-    det_items,
-    det_traps,
-    det_mon,
+    searching,
     opening,
-    sacr_life,
-    sacr_spi,
     res,
     light,
     bless,
     anim_wpns,
+    transmut,
 
-    //Rogue background
-    cloud_minds,
-
-    //Ghoul background
+    // Ghoul background
     frenzy,
 
-    //Monsters only
+    // Monsters only
     disease,
-    heal_self,
-    knock_back,
+    knockback,
     mi_go_hypno,
     burn,
+    deafen,
 
-    //Spells from special sources
-    pharaoh_staff, //From the Staff of the Pharaohs artifact
+    // Spells from special sources
+    pharaoh_staff, // From the Staff of the Pharaohs artifact
+    subdue_wpns, // Learned at the same time as Animate Weapons
 
     END
 };
 
-enum class Intr_spell_shock {mild, disturbing, severe};
+enum class SpellSkill
+{
+    basic,
+    expert,
+    master
+};
+
+enum class SpellSrc
+{
+    learned,
+    manuscript,
+    item
+};
+
+enum class SpellShock
+{
+    mild,
+    disturbing,
+    severe
+};
+
+enum class IsIntrinsic
+{
+    no,
+    yes
+};
 
 class Spell;
 
@@ -68,15 +84,9 @@ namespace spell_handling
 {
 
 Spell* random_spell_for_mon();
-Spell* mk_spell_from_id(const Spell_id spell_id);
+Spell* mk_spell_from_id(const SpellId spell_id);
 
-} //spell_handling
-
-enum class Spell_effect_noticed
-{
-    no,
-    yes
-};
+} // spell_handling
 
 class Spell
 {
@@ -85,64 +95,75 @@ public:
 
     virtual ~Spell() {}
 
-    Spell_effect_noticed cast(Actor* const caster, const bool IS_INTRINSIC) const;
+    void cast(Actor* const caster,
+              const SpellSkill skill,
+              const IsIntrinsic intrinsic) const;
 
     virtual bool allow_mon_cast_now(Mon& mon) const
     {
         (void)mon;
         return false;
     }
-    virtual bool is_avail_for_all_mon() const = 0;
-    virtual bool is_avail_for_player() const = 0;
-    virtual std::string name() const = 0;
-    virtual Spell_id id() const = 0;
 
-    virtual std::vector<std::string> descr() const = 0;
-
-    Range spi_cost(const bool IS_BASE_COST_ONLY, Actor* const caster = nullptr) const;
-
-    int shock_lvl_intr_cast() const
+    virtual int mon_cooldown() const
     {
-        const Intr_spell_shock shock_type = shock_type_intr_cast();
-
-        switch (shock_type)
-        {
-        case Intr_spell_shock::mild:
-            return 2;
-
-        case Intr_spell_shock::disturbing:
-            return 8;
-
-        case Intr_spell_shock::severe:
-            return 16;
-        }
-
-        return -1;
+        return 3;
     }
 
-    virtual Intr_spell_shock shock_type_intr_cast() const = 0;
+    virtual bool mon_can_learn() const = 0;
 
-protected:
-    virtual Spell_effect_noticed cast_impl(Actor* const caster) const = 0;
+    virtual bool player_can_learn() const = 0;
 
-    virtual int max_spi_cost() const = 0;
+    virtual std::string name() const = 0;
 
-    void on_resist(Actor& target) const;
-};
+    virtual SpellId id() const = 0;
 
-class Spell_darkbolt: public Spell
-{
-public:
-    Spell_darkbolt() : Spell() {}
-
-    bool allow_mon_cast_now(Mon& mon) const override;
-
-    bool is_avail_for_all_mon() const override
+    virtual bool can_be_improved_with_skill() const
     {
         return true;
     }
 
-    bool is_avail_for_player() const override
+    std::vector<std::string> descr(const SpellSkill skill,
+                                   const IsIntrinsic is_intrinsic) const;
+
+    Range spi_cost(const SpellSkill skill, Actor* const caster = nullptr) const;
+
+    int shock_value() const;
+
+    virtual SpellShock shock_type() const = 0;
+
+    virtual void run_effect(Actor* const caster,
+                            const SpellSkill skill) const = 0;
+
+protected:
+    virtual int max_spi_cost(const SpellSkill skill) const = 0;
+
+    virtual std::vector<std::string> descr_specific(
+        const SpellSkill skill) const = 0;
+
+    virtual bool is_noisy(const SpellSkill skill) const = 0;
+
+    void on_resist(Actor& target) const;
+};
+
+class SpellDarkbolt: public Spell
+{
+public:
+    SpellDarkbolt() : Spell() {}
+
+    bool allow_mon_cast_now(Mon& mon) const override;
+
+    int mon_cooldown() const override
+    {
+        return 5;
+    }
+
+    bool mon_can_learn() const override
+    {
+        return true;
+    }
+
+    bool player_can_learn() const override
     {
         return true;
     }
@@ -152,101 +173,110 @@ public:
         return "Darkbolt";
     }
 
-    Spell_id id() const override
+    SpellId id() const override
     {
-        return Spell_id::darkbolt;
+        return SpellId::darkbolt;
     }
 
-    Intr_spell_shock shock_type_intr_cast() const override
+    SpellShock shock_type() const override
     {
-        return Intr_spell_shock::mild;
+        return SpellShock::mild;
     }
 
-    std::vector<std::string> descr() const override
-    {
-        return
-        {
-            "Siphons power from some hellish mystic source, which is focused into a "
-            "bolt cast towards a target with great force."
-        };
-    }
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
 
 private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
+    int max_spi_cost(const SpellSkill skill) const override
     {
-        return player_bon::spi_occultist_can_cast_at_lvl(1) - (SPI_PER_LVL * 3);
+        (void)skill;
+
+        return 4;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return true;
     }
 };
 
-class Spell_aza_wrath: public Spell
+class SpellAzaWrath: public Spell
 {
 public:
-    Spell_aza_wrath() : Spell() {}
+    SpellAzaWrath() : Spell() {}
 
     bool allow_mon_cast_now(Mon& mon) const override;
 
-    bool is_avail_for_all_mon() const override
+    int mon_cooldown() const override
     {
-        return true;
+        return 6;
     }
 
-    bool is_avail_for_player() const override
+    bool mon_can_learn() const override
+    {
+        return false;
+    }
+
+    bool player_can_learn() const override
     {
         return true;
     }
 
     std::string name() const override
     {
-        return "Azathoths Wrath";
+        return "Azathoth's Wrath";
     }
 
-    Spell_id id() const override
+    SpellId id() const override
     {
-        return Spell_id::aza_wrath;
+        return SpellId::aza_wrath;
     }
 
-    Intr_spell_shock shock_type_intr_cast() const override
+    SpellShock shock_type() const override
     {
-        return Intr_spell_shock::disturbing;
+        return SpellShock::disturbing;
     }
 
-    std::vector<std::string> descr() const override
-    {
-        return
-        {
-            "Channels the destructive force of Azathoth unto all visible enemies."
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
 
-            /*
-            "This spell will generally inflict damage, but due to the chaotic nature of "
-            "its source, it can occasionally have other effects, and may affect the "
-            "caster as well [TODO]."*/
-        };
-    }
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
 
 private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
+    int max_spi_cost(const SpellSkill skill) const override
     {
-        return player_bon::spi_occultist_can_cast_at_lvl(2);
+        (void)skill;
+
+        return 8;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return true;
     }
 };
 
-class Spell_mayhem: public Spell
+class SpellMayhem: public Spell
 {
 public:
-    Spell_mayhem() : Spell() {}
+    SpellMayhem() : Spell() {}
 
     bool allow_mon_cast_now(Mon& mon) const override;
 
-    bool is_avail_for_all_mon() const override
+    bool mon_can_learn() const override
     {
         return false;
     }
 
-    bool is_avail_for_player() const override
+    bool player_can_learn() const override
     {
         return true;
     }
@@ -256,47 +286,56 @@ public:
         return "Mayhem";
     }
 
-    Spell_id id() const override
+    SpellId id() const override
     {
-        return Spell_id::mayhem;
+        return SpellId::mayhem;
     }
 
-    Intr_spell_shock shock_type_intr_cast() const override
+    SpellShock shock_type() const override
     {
-        return Intr_spell_shock::severe;
+        return SpellShock::disturbing;
     }
 
-    std::vector<std::string> descr() const override
-    {
-        return
-        {
-            "Engulfs all visible enemies in flames, and causes terrible destruction on "
-            "the surrounding area."
-        };
-    }
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
 
 private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
+    int max_spi_cost(const SpellSkill skill) const override
     {
-        return player_bon::spi_occultist_can_cast_at_lvl(11);
+        (void)skill;
+
+        return 6;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return true;
     }
 };
 
-class Spell_pest: public Spell
+class SpellPest: public Spell
 {
 public:
-    Spell_pest() : Spell() {}
+    SpellPest() : Spell() {}
 
     bool allow_mon_cast_now(Mon& mon) const override;
 
-    bool is_avail_for_all_mon() const override
+    int mon_cooldown() const override
+    {
+        return 21;
+    }
+
+    bool mon_can_learn() const override
     {
         return true;
     }
 
-    bool is_avail_for_player() const override
+    bool player_can_learn() const override
     {
         return true;
     }
@@ -306,44 +345,49 @@ public:
         return "Pestilence";
     }
 
-    Spell_id id() const override
+    SpellId id() const override
     {
-        return Spell_id::pest;
+        return SpellId::pest;
     }
 
-    Intr_spell_shock shock_type_intr_cast() const override
+    SpellShock shock_type() const override
     {
-        return Intr_spell_shock::disturbing;
+        return SpellShock::disturbing;
     }
 
-    std::vector<std::string> descr() const override
-    {
-        return
-        {
-            "Summons spiders or rats.",
-            summon_warning_str
-        };
-    }
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
 private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
+    int max_spi_cost(const SpellSkill skill) const override
     {
-        return player_bon::spi_occultist_can_cast_at_lvl(2);
+        (void)skill;
+
+        return 6;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return true;
     }
 };
 
-class Spell_anim_wpns: public Spell
+class SpellAnimWpns: public Spell
 {
 public:
-    Spell_anim_wpns() : Spell() {}
+    SpellAnimWpns() : Spell() {}
 
-    bool is_avail_for_all_mon() const override
+    bool mon_can_learn() const override
     {
         return false;
     }
 
-    bool is_avail_for_player() const override
+    bool player_can_learn() const override
     {
         return true;
     }
@@ -353,229 +397,217 @@ public:
         return "Animate Weapons";
     }
 
-    Spell_id id() const override
+    SpellId id() const override
     {
-        return Spell_id::anim_wpns;
+        return SpellId::anim_wpns;
     }
 
-    Intr_spell_shock shock_type_intr_cast() const override
+    SpellShock shock_type() const override
     {
-        return Intr_spell_shock::mild;
+        return SpellShock::mild;
     }
 
-    std::vector<std::string> descr() const override
-    {
-        return
-        {
-            "Infuses lifeless weapons with a spirit of their own, causing them to rise up into the "
-            "air and protect their master (for a while). It is only possible to animate basic "
-            "melee weapons however - \"modern\" mechanisms such as pistols or machine guns are far "
-            "too complex."
-        };
-    }
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
 
 private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
+    int max_spi_cost(const SpellSkill skill) const override
     {
-        return player_bon::spi_occultist_can_cast_at_lvl(2);
+        (void)skill;
+
+        return 6;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return true;
     }
 };
 
-class Spell_pharaoh_staff : public Spell
+class SpellSubdueWpns : public Spell
 {
 public:
-    Spell_pharaoh_staff() {}
-    ~Spell_pharaoh_staff() {}
+    SpellSubdueWpns() {}
+    ~SpellSubdueWpns() {}
 
-    bool allow_mon_cast_now(Mon& mon) const override;
-
-    virtual bool is_avail_for_all_mon() const override
+    virtual bool mon_can_learn() const override
     {
         return false;
     }
 
-    virtual bool is_avail_for_player() const override
+    virtual bool player_can_learn() const override
+    {
+        return true;
+    }
+
+    virtual std::string name() const override
+    {
+        return "Subdue Weapons";
+    }
+
+    virtual SpellId id() const override
+    {
+        return SpellId::subdue_wpns;
+    }
+
+    bool can_be_improved_with_skill() const override
+    {
+        return false;
+    }
+
+    virtual SpellShock shock_type() const override
+    {
+        return SpellShock::mild;
+    }
+
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
+protected:
+    virtual int max_spi_cost(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return 2;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return true;
+    }
+};
+
+class SpellPharaohStaff : public Spell
+{
+public:
+    SpellPharaohStaff() {}
+    ~SpellPharaohStaff() {}
+
+    bool allow_mon_cast_now(Mon& mon) const override;
+
+    virtual bool mon_can_learn() const override
+    {
+        return false;
+    }
+
+    virtual bool player_can_learn() const override
     {
         return false;
     }
 
     virtual std::string name() const override
     {
-        return "Summon Mummy servant";
+        return "Summon Mummy Servant";
     }
 
-    virtual Spell_id id() const override
+    virtual SpellId id() const override
     {
-        return Spell_id::pharaoh_staff;
+        return SpellId::pharaoh_staff;
     }
 
-    virtual std::vector<std::string> descr() const override
+    bool can_be_improved_with_skill() const override
     {
-        return
-        {
-            "Summons a loyal Mummy servant which will fight for the caster.",
-
-            "If an allied Mummy is already present, this spell will instead heal it.",
-
-            summon_warning_str
-        };
+        return false;
     }
 
-    virtual Intr_spell_shock shock_type_intr_cast() const
+    virtual SpellShock shock_type() const override
     {
-        return Intr_spell_shock::disturbing;
+        return SpellShock::disturbing;
     }
+
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
 protected:
-    virtual Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    virtual int max_spi_cost() const override
+    virtual int max_spi_cost(const SpellSkill skill) const override
     {
-        return player_bon::spi_occultist_can_cast_at_lvl(2);
+        (void)skill;
+
+        return 6;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+        return false;
     }
 };
 
-class Spell_det_items: public Spell
+class SpellSearching: public Spell
 {
 public:
-    Spell_det_items() : Spell() {}
+    SpellSearching() : Spell() {}
 
-    bool is_avail_for_all_mon() const override
+    bool mon_can_learn() const override
     {
         return false;
     }
 
-    bool is_avail_for_player() const override
+    bool player_can_learn() const override
     {
         return true;
     }
 
     std::string name() const override
     {
-        return "Detect Items";
+        return "Searching";
     }
 
-    Spell_id id() const override
+    SpellId id() const override
     {
-        return Spell_id::det_items;
+        return SpellId::searching;
     }
 
-    Intr_spell_shock shock_type_intr_cast() const override
+    SpellShock shock_type() const override
     {
-        return Intr_spell_shock::disturbing;
+        return SpellShock::mild;
     }
 
-    std::vector<std::string> descr() const override
-    {
-        return {"Reveals the presence of all items in the surrounding area."};
-    }
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
 private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
+    int max_spi_cost(const SpellSkill skill) const override
     {
-        return player_bon::spi_occultist_can_cast_at_lvl(6);
+        (void)skill;
+
+        return 5;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+        return false;
     }
 };
 
-class Spell_det_traps: public Spell
+class SpellOpening: public Spell
 {
 public:
-    Spell_det_traps() : Spell() {}
+    SpellOpening() : Spell() {}
 
-    bool is_avail_for_all_mon() const override
+    bool mon_can_learn() const override
     {
         return false;
     }
 
-    bool is_avail_for_player() const override
-    {
-        return true;
-    }
-
-    std::string name() const override
-    {
-        return "Detect Traps";
-    }
-
-    Spell_id id() const override
-    {
-        return Spell_id::det_traps;
-    }
-
-    Intr_spell_shock shock_type_intr_cast() const override
-    {
-        return Intr_spell_shock::disturbing;
-    }
-
-    std::vector<std::string> descr() const override
-    {
-        return {"Reveals the presence of all traps in the surrounding area."};
-    }
-private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
-    {
-        return player_bon::spi_occultist_can_cast_at_lvl(4);
-    }
-};
-
-class Spell_det_mon: public Spell
-{
-public:
-    Spell_det_mon() : Spell() {}
-
-    bool is_avail_for_all_mon() const override
-    {
-        return false;
-    }
-
-    bool is_avail_for_player() const override
-    {
-        return true;
-    }
-
-    std::string name() const override
-    {
-        return "Detect Creatures";
-    }
-
-    Spell_id id() const override
-    {
-        return Spell_id::det_mon;
-    }
-
-    Intr_spell_shock shock_type_intr_cast() const override
-    {
-        return Intr_spell_shock::disturbing;
-    }
-
-    std::vector<std::string> descr() const override
-    {
-        return {"Reveals the presence of all creatures in the surrounding area."};
-    }
-private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
-    {
-        return player_bon::spi_occultist_can_cast_at_lvl(6);
-    }
-};
-
-class Spell_opening: public Spell
-{
-public:
-    Spell_opening() : Spell() {}
-
-    bool is_avail_for_all_mon() const override
-    {
-        return false;
-    }
-
-    bool is_avail_for_player() const override
+    bool player_can_learn() const override
     {
         return true;
     }
@@ -585,177 +617,44 @@ public:
         return "Opening";
     }
 
-    Spell_id id() const override
+    SpellId id() const override
     {
-        return Spell_id::opening;
+        return SpellId::opening;
     }
 
-    Intr_spell_shock shock_type_intr_cast() const override
+    SpellShock shock_type() const override
     {
-        return Intr_spell_shock::disturbing;
+        return SpellShock::mild;
     }
 
-    std::vector<std::string> descr() const override
-    {
-        return {"Opens all locks, lids and doors in the surrounding area."};
-    }
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
 private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
+    int max_spi_cost(const SpellSkill skill) const override
     {
-        return player_bon::spi_occultist_can_cast_at_lvl(5);
+        (void)skill;
+
+        return 4;
     }
+
+    bool is_noisy(const SpellSkill skill) const override;
 };
 
-class Spell_sacr_life: public Spell
+class SpellFrenzy: public Spell
 {
 public:
-    Spell_sacr_life() : Spell() {}
+    SpellFrenzy() : Spell() {}
 
-    bool is_avail_for_all_mon() const override
+    bool mon_can_learn() const override
     {
         return false;
     }
 
-    bool is_avail_for_player() const override
-    {
-        return true;
-    }
-
-    std::string name() const override
-    {
-        return "Sacrifice Life";
-    }
-
-    Spell_id id() const override
-    {
-        return Spell_id::sacr_life;
-    }
-
-    Intr_spell_shock shock_type_intr_cast() const override
-    {
-        return Intr_spell_shock::disturbing;
-    }
-
-    std::vector<std::string> descr() const override
-    {
-        return
-        {
-            "Brings the caster to the brink of death in order to restore the spirit. "
-            "The amount restored is proportional to the life sacrificed."
-        };
-    }
-private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
-    {
-        return player_bon::spi_occultist_can_cast_at_lvl(2);
-    }
-};
-
-class Spell_sacr_spi: public Spell
-{
-public:
-    Spell_sacr_spi() : Spell() {}
-
-    bool is_avail_for_all_mon() const override
-    {
-        return false;
-    }
-
-    bool is_avail_for_player() const override
-    {
-        return true;
-    }
-
-    std::string name() const override
-    {
-        return "Sacrifice Spirit";
-    }
-
-    Spell_id id() const override
-    {
-        return Spell_id::sacr_spi;
-    }
-
-    Intr_spell_shock shock_type_intr_cast() const override
-    {
-        return Intr_spell_shock::disturbing;
-    }
-
-    std::vector<std::string> descr() const override
-    {
-        return
-        {
-            "Brings the caster to the brink of spiritual death in order to restore "
-            "health. The amount restored is proportional to the spirit sacrificed."
-        };
-    }
-private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
-    {
-        return player_bon::spi_occultist_can_cast_at_lvl(1) - (SPI_PER_LVL * 3);
-    }
-};
-
-class Spell_cloud_minds: public Spell
-{
-public:
-    Spell_cloud_minds() : Spell() {}
-
-    bool is_avail_for_all_mon() const override
-    {
-        return false;
-    }
-
-    bool is_avail_for_player() const override
-    {
-        return true;
-    }
-
-    std::string name() const override
-    {
-        return "Cloud Minds";
-    }
-
-    Spell_id id() const override
-    {
-        return Spell_id::cloud_minds;
-    }
-
-    Intr_spell_shock shock_type_intr_cast() const override
-    {
-        return Intr_spell_shock::mild;
-    }
-
-    std::vector<std::string> descr() const override
-    {
-        return {"All enemies forget your presence."};
-    }
-private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
-    {
-        return 5;
-    }
-};
-
-class Spell_frenzy: public Spell
-{
-public:
-    Spell_frenzy() : Spell() {}
-
-    bool is_avail_for_all_mon() const override
-    {
-        return false;
-    }
-
-    bool is_avail_for_player() const override
+    bool player_can_learn() const override
     {
         return true;
     }
@@ -765,45 +664,53 @@ public:
         return "Incite Frenzy";
     }
 
-    Spell_id id() const override
+    SpellId id() const override
     {
-        return Spell_id::frenzy;
+        return SpellId::frenzy;
     }
 
-    Intr_spell_shock shock_type_intr_cast() const override
-    {
-        return Intr_spell_shock::mild;
-    }
-
-    std::vector<std::string> descr() const override
-    {
-        return
-        {
-            "Incites a great rage in the caster, which will charge their enemies with a "
-            "terrible, uncontrollable fury."
-        };
-    }
-
-private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
-    {
-        return 5;
-    }
-};
-
-class Spell_bless: public Spell
-{
-public:
-    Spell_bless() : Spell() {}
-
-    bool is_avail_for_all_mon() const override
+    bool can_be_improved_with_skill() const override
     {
         return false;
     }
 
-    bool is_avail_for_player() const override
+    SpellShock shock_type() const override
+    {
+        return SpellShock::mild;
+    }
+
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
+private:
+    int max_spi_cost(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return 3;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+        return false;
+    }
+};
+
+class SpellBless: public Spell
+{
+public:
+    SpellBless() : Spell() {}
+
+    bool mon_can_learn() const override
+    {
+        return false;
+    }
+
+    bool player_can_learn() const override
     {
         return true;
     }
@@ -813,39 +720,98 @@ public:
         return "Bless";
     }
 
-    Spell_id id() const override
+    SpellId id() const override
     {
-        return Spell_id::bless;
+        return SpellId::bless;
     }
 
-    Intr_spell_shock shock_type_intr_cast() const override
+    SpellShock shock_type() const override
     {
-        return Intr_spell_shock::disturbing;
+        return SpellShock::mild;
     }
 
-    std::vector<std::string> descr() const override
-    {
-        return {"Bends the universe in favor of the caster."};
-    }
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
 private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
+    int max_spi_cost(const SpellSkill skill) const override
     {
-        return player_bon::spi_occultist_can_cast_at_lvl(11);
+        (void)skill;
+
+        return 8;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+        return false;
     }
 };
 
-class Spell_light: public Spell
+class SpellTransmut: public Spell
 {
 public:
-    Spell_light() : Spell() {}
+    SpellTransmut() : Spell() {}
 
-    bool is_avail_for_all_mon() const override
+    bool mon_can_learn() const override
     {
         return false;
     }
-    bool is_avail_for_player() const override
+
+    bool player_can_learn() const override
+    {
+        return true;
+    }
+
+    std::string name() const override
+    {
+        return "Transmutation";
+    }
+
+    SpellId id() const override
+    {
+        return SpellId::transmut;
+    }
+
+    SpellShock shock_type() const override
+    {
+        return SpellShock::mild;
+    }
+
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
+private:
+    int max_spi_cost(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return 4;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+        return false;
+    }
+};
+
+class SpellLight: public Spell
+{
+public:
+    SpellLight() : Spell() {}
+
+    bool mon_can_learn() const override
+    {
+        return false;
+    }
+    bool player_can_learn() const override
     {
         return true;
     }
@@ -855,41 +821,55 @@ public:
         return "Light";
     }
 
-    Spell_id id() const override
+    SpellId id() const override
     {
-        return Spell_id::light;
+        return SpellId::light;
     }
 
-    Intr_spell_shock shock_type_intr_cast() const override
+    SpellShock shock_type() const override
     {
-        return Intr_spell_shock::mild;
+        return SpellShock::mild;
     }
 
-    std::vector<std::string> descr() const override
-    {
-        return {"Illuminates the area around the caster."};
-    }
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
 private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
+    int max_spi_cost(const SpellSkill skill) const override
     {
-        return player_bon::spi_occultist_can_cast_at_lvl(1);
+        (void)skill;
+
+        return 4;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+        return false;
     }
 };
 
-class Spell_knock_back: public Spell
+class SpellKnockBack: public Spell
 {
 public:
-    Spell_knock_back() : Spell() {}
+    SpellKnockBack() : Spell() {}
 
     bool allow_mon_cast_now(Mon& mon) const override;
 
-    bool is_avail_for_all_mon() const override
+    int mon_cooldown() const override
+    {
+        return 5;
+    }
+
+    bool mon_can_learn() const override
     {
         return true;
     }
-    bool is_avail_for_player() const override
+
+    bool player_can_learn() const override
     {
         return false;
     }
@@ -899,42 +879,61 @@ public:
         return "Knockback";
     }
 
-    Spell_id id() const override
+    SpellId id() const override
     {
-        return Spell_id::knock_back;
+        return SpellId::knockback;
     }
 
-    Intr_spell_shock shock_type_intr_cast() const override
+    SpellShock shock_type() const override
     {
-        return Intr_spell_shock::disturbing;
+        return SpellShock::disturbing;
     }
 
-    std::vector<std::string> descr() const override
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override
     {
+        (void)skill;
+
         return {""};
     }
-private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
 
-    int max_spi_cost() const override
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
+private:
+    int max_spi_cost(const SpellSkill skill) const override
     {
-        return PLAYER_START_SPI + 2;
+        (void)skill;
+
+        return 8;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return true;
     }
 };
 
-class Spell_teleport: public Spell
+class SpellTeleport: public Spell
 {
 public:
-    Spell_teleport() : Spell() {}
+    SpellTeleport() : Spell() {}
 
     bool allow_mon_cast_now(Mon& mon) const override;
 
-    bool is_avail_for_all_mon() const override
+    int mon_cooldown() const override
+    {
+        return 30;
+    }
+
+    bool mon_can_learn() const override
     {
         return true;
     }
 
-    bool is_avail_for_player() const override
+    bool player_can_learn() const override
     {
         return true;
     }
@@ -944,42 +943,168 @@ public:
         return "Teleport";
     }
 
-    Spell_id id() const override
+    SpellId id() const override
     {
-        return Spell_id::teleport;
+        return SpellId::teleport;
     }
 
-    Intr_spell_shock shock_type_intr_cast() const override
+    SpellShock shock_type() const override
     {
-        return Intr_spell_shock::disturbing;
+        return SpellShock::disturbing;
     }
 
-    std::vector<std::string> descr() const override
-    {
-        return {"Instantly moves the caster to a different position."};
-    }
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
 private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
+    int max_spi_cost(const SpellSkill skill) const override
     {
-        return player_bon::spi_occultist_can_cast_at_lvl(2);
+        (void)skill;
+
+        return 10;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return true;
     }
 };
 
-class Spell_res: public Spell
+class SpellSeeInvis: public Spell
 {
 public:
-    Spell_res() : Spell() {}
+    SpellSeeInvis() : Spell() {}
 
     bool allow_mon_cast_now(Mon& mon) const override;
 
-    bool is_avail_for_all_mon() const override
+    int mon_cooldown() const override
+    {
+        return 30;
+    }
+
+    bool mon_can_learn() const override
+    {
+        return false;
+    }
+
+    bool player_can_learn() const override
     {
         return true;
     }
 
-    bool is_avail_for_player() const override
+    std::string name() const override
+    {
+        return "See Invisible";
+    }
+
+    SpellId id() const override
+    {
+        return SpellId::see_invis;
+    }
+
+    SpellShock shock_type() const override
+    {
+        return SpellShock::mild;
+    }
+
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
+private:
+    int max_spi_cost(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return 8;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return true;
+    }
+};
+
+class SpellSpellShield: public Spell
+{
+public:
+    SpellSpellShield() : Spell() {}
+
+    bool allow_mon_cast_now(Mon& mon) const override;
+
+    int mon_cooldown() const override
+    {
+        return 3;
+    }
+
+    bool mon_can_learn() const override
+    {
+        return true;
+    }
+
+    bool player_can_learn() const override
+    {
+        return true;
+    }
+
+    std::string name() const override
+    {
+        return "Spell Shield";
+    }
+
+    SpellId id() const override
+    {
+        return SpellId::spell_shield;
+    }
+
+    SpellShock shock_type() const override
+    {
+        return SpellShock::mild;
+    }
+
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
+private:
+    int max_spi_cost(const SpellSkill skill) const override;
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+        return false;
+    }
+};
+
+class SpellRes: public Spell
+{
+public:
+    SpellRes() : Spell() {}
+
+    bool allow_mon_cast_now(Mon& mon) const override;
+
+    int mon_cooldown() const override
+    {
+        return 20;
+    }
+
+    bool mon_can_learn() const override
+    {
+        return true;
+    }
+
+    bool player_can_learn() const override
     {
         return true;
     }
@@ -989,182 +1114,115 @@ public:
         return "Resistance";
     }
 
-    Spell_id id() const override
+    SpellId id() const override
     {
-        return Spell_id::res;
+        return SpellId::res;
     }
 
-    Intr_spell_shock shock_type_intr_cast() const override
+    SpellShock shock_type() const override
     {
-        return Intr_spell_shock::disturbing;
+        return SpellShock::mild;
     }
 
-    std::vector<std::string> descr() const override
-    {
-        return
-        {
-            "For a brief time, the caster is completely shielded from fire and electricity."
-        };
-    }
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
 private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
+    int max_spi_cost(const SpellSkill skill) const override
     {
-        return player_bon::spi_occultist_can_cast_at_lvl(4);
+        (void)skill;
+
+        return 7;
     }
-};
 
-class Spell_prop_on_mon: public Spell
-{
-public:
-    Spell_prop_on_mon() : Spell() {}
-
-    virtual bool allow_mon_cast_now(Mon& mon) const override;
-
-    bool is_avail_for_all_mon() const override
+    bool is_noisy(const SpellSkill skill) const override
     {
+        (void)skill;
+
         return true;
     }
-
-    bool is_avail_for_player() const override
-    {
-        return true;
-    }
-
-    virtual std::string name() const override = 0;
-    virtual Spell_id id() const override = 0;
-    virtual Intr_spell_shock shock_type_intr_cast() const override = 0;
-
-protected:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-    virtual Prop_id applied_prop_id() const = 0;
-    virtual int max_spi_cost() const override = 0;
 };
 
-class Spell_slow_mon: public Spell_prop_on_mon
+class SpellEnfeeble: public Spell
 {
 public:
-    Spell_slow_mon() : Spell_prop_on_mon() {}
-
-    std::string name() const override
-    {
-        return "Slow Enemies";
-    }
-
-    Spell_id id() const override
-    {
-        return Spell_id::slow_mon;
-    }
-
-    Intr_spell_shock shock_type_intr_cast() const override
-    {
-        return Intr_spell_shock::disturbing;
-    }
-
-    std::vector<std::string> descr() const override
-    {
-        return {"Causes all visible enemies to move slower."};
-    }
-private:
-    Prop_id applied_prop_id() const override
-    {
-        return Prop_id::slowed;
-    }
-
-    int max_spi_cost() const override
-    {
-        return player_bon::spi_occultist_can_cast_at_lvl(1);
-    }
-};
-
-class Spell_terrify_mon: public Spell_prop_on_mon
-{
-public:
-    Spell_terrify_mon() : Spell_prop_on_mon() {}
-
-    std::string name() const override
-    {
-        return "Terrify Enemies";
-    }
-
-    Spell_id id() const override
-    {
-        return Spell_id::terrify_mon;
-    }
-
-    Intr_spell_shock shock_type_intr_cast() const override
-    {
-        return Intr_spell_shock::severe;
-    }
-
-    std::vector<std::string> descr() const override
-    {
-        return {"Causes terror in the minds of all visible enemies."};
-    }
-private:
-    Prop_id applied_prop_id() const override
-    {
-        return Prop_id::terrified;
-    }
-
-    int max_spi_cost() const override
-    {
-        return player_bon::spi_occultist_can_cast_at_lvl(3);
-    }
-};
-
-class Spell_paralyze_mon: public Spell_prop_on_mon
-{
-public:
-    Spell_paralyze_mon() : Spell_prop_on_mon() {}
-
-    std::string name() const override
-    {
-        return "Paralyze Enemies";
-    }
-
-    Spell_id id() const override
-    {
-        return Spell_id::paralyze_mon;
-    }
-
-    virtual bool allow_mon_cast_now(Mon& mon) const override;
-
-    Intr_spell_shock shock_type_intr_cast() const override
-    {
-        return Intr_spell_shock::disturbing;
-    }
-
-    std::vector<std::string> descr() const override
-    {
-        return {"All visible enemies are paralyzed for a brief moment."};
-    }
-private:
-    Prop_id applied_prop_id() const override
-    {
-        return Prop_id::paralyzed;
-    }
-
-    int max_spi_cost() const override
-    {
-        return player_bon::spi_occultist_can_cast_at_lvl(6);
-    }
-};
-
-class Spell_disease: public Spell
-{
-public:
-    Spell_disease() : Spell() {}
+    SpellEnfeeble() : Spell() {}
 
     bool allow_mon_cast_now(Mon& mon) const override;
 
-    bool is_avail_for_all_mon() const override
+    int mon_cooldown() const override
+    {
+        return 5;
+    }
+
+    std::string name() const override
+    {
+        return "Enfeeble";
+    }
+
+    SpellId id() const override
+    {
+        return SpellId::enfeeble;
+    }
+
+    SpellShock shock_type() const override
+    {
+        return SpellShock::mild;
+    }
+
+    bool mon_can_learn() const override
     {
         return true;
     }
 
-    bool is_avail_for_player() const override
+    bool player_can_learn() const override
+    {
+        return true;
+    }
+
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
+protected:
+    int max_spi_cost(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return 6;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return true;
+    }
+};
+
+class SpellDisease: public Spell
+{
+public:
+    SpellDisease() : Spell() {}
+
+    bool allow_mon_cast_now(Mon& mon) const override;
+
+    int mon_cooldown() const override
+    {
+        return 10;
+    }
+
+    bool mon_can_learn() const override
+    {
+        return true;
+    }
+
+    bool player_can_learn() const override
     {
         return false;
     }
@@ -1174,42 +1232,61 @@ public:
         return "Disease";
     }
 
-    Spell_id id() const override
+    SpellId id() const override
     {
-        return Spell_id::disease;
+        return SpellId::disease;
     }
 
-    Intr_spell_shock shock_type_intr_cast() const override
+    SpellShock shock_type() const override
     {
-        return Intr_spell_shock::disturbing;
+        return SpellShock::disturbing;
     }
 
-    std::vector<std::string> descr() const override
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override
     {
+        (void)skill;
+
         return {""};
     }
-private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
 
-    int max_spi_cost() const override
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
+private:
+    int max_spi_cost(const SpellSkill skill) const override
     {
-        return player_bon::spi_occultist_can_cast_at_lvl(2);
+        (void)skill;
+
+        return 7;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return true;
     }
 };
 
-class Spell_summon_mon: public Spell
+class SpellSummonMon: public Spell
 {
 public:
-    Spell_summon_mon() : Spell() {}
+    SpellSummonMon() : Spell() {}
 
     bool allow_mon_cast_now(Mon& mon) const override;
 
-    bool is_avail_for_all_mon() const override
+    int mon_cooldown() const override
+    {
+        return 8;
+    }
+
+    bool mon_can_learn() const override
     {
         return true;
     }
 
-    bool is_avail_for_player() const override
+    bool player_can_learn() const override
     {
         return true;
     }
@@ -1219,50 +1296,58 @@ public:
         return "Summon Creature";
     }
 
-    Spell_id id() const override
+    SpellId id() const override
     {
-        return Spell_id::summon;
+        return SpellId::summon;
     }
 
-    Intr_spell_shock shock_type_intr_cast() const override
+    SpellShock shock_type() const override
     {
-        return Intr_spell_shock::disturbing;
+        return SpellShock::disturbing;
     }
 
-    std::vector<std::string> descr() const override
-    {
-        return
-        {
-            "Summons a creature to do the caster's bidding. A more powerful sorcerer "
-            "(higher character level) can summon beings of greater might and rarity.",
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
 
-            summon_warning_str
-        };
-    }
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
 private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
+    int max_spi_cost(const SpellSkill skill) const override
     {
-        return player_bon::spi_occultist_can_cast_at_lvl(2);
+        (void)skill;
+
+        return 6;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return true;
     }
 };
 
-class Spell_heal_self: public Spell
+class SpellHeal: public Spell
 {
 public:
-    Spell_heal_self() : Spell() {}
+    SpellHeal() : Spell() {}
 
     bool allow_mon_cast_now(Mon& mon) const override;
 
-    bool is_avail_for_all_mon() const override
+    int mon_cooldown() const override
+    {
+        return 6;
+    }
+
+    bool mon_can_learn() const override
     {
         return true;
     }
 
-    bool is_avail_for_player() const override
+    bool player_can_learn() const override
     {
-        return false;
+        return true;
     }
 
     std::string name() const override
@@ -1270,87 +1355,120 @@ public:
         return "Healing";
     }
 
-    Spell_id id() const override
+    SpellId id() const override
     {
-        return Spell_id::heal_self;
+        return SpellId::heal;
     }
 
-    Intr_spell_shock shock_type_intr_cast() const override
+    SpellShock shock_type() const override
     {
-        return Intr_spell_shock::disturbing;
+        return SpellShock::mild;
     }
 
-    std::vector<std::string> descr() const override
-    {
-        return {""};
-    }
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override;
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
 private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
-
-    int max_spi_cost() const override
+    int max_spi_cost(const SpellSkill skill) const override
     {
-        return player_bon::spi_occultist_can_cast_at_lvl(2);
+        (void)skill;
+
+        return 6;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return true;
     }
 };
 
-class Spell_mi_go_hypno: public Spell
+class SpellMiGoHypno: public Spell
 {
 public:
-    Spell_mi_go_hypno() : Spell() {}
+    SpellMiGoHypno() : Spell() {}
 
     bool allow_mon_cast_now(Mon& mon) const override;
 
-    bool is_avail_for_all_mon() const override
+    int mon_cooldown() const override
+    {
+        return 5;
+    }
+
+    bool mon_can_learn() const override
     {
         return true;
     }
 
-    bool is_avail_for_player() const override
+    bool player_can_learn() const override
     {
         return false;
     }
 
     std::string name() const override
     {
-        return "Mi_go Hypnosis";
+        return "MiGo Hypnosis";
     }
 
-    Spell_id id() const override
+    SpellId id() const override
     {
-        return Spell_id::mi_go_hypno;
+        return SpellId::mi_go_hypno;
     }
 
-    Intr_spell_shock shock_type_intr_cast() const override
+    SpellShock shock_type() const override
     {
-        return Intr_spell_shock::disturbing;
+        return SpellShock::disturbing;
     }
 
-    std::vector<std::string> descr() const override
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override
     {
+        (void)skill;
+
         return {""};
     }
-private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
 
-    int max_spi_cost() const override
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
+private:
+    int max_spi_cost(const SpellSkill skill) const override
     {
-        return player_bon::spi_occultist_can_cast_at_lvl(2);
+        (void)skill;
+
+        return 7;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return true;
     }
 };
 
-class Spell_burn: public Spell
+class SpellBurn: public Spell
 {
 public:
-    Spell_burn() : Spell() {}
+    SpellBurn() : Spell() {}
 
     bool allow_mon_cast_now(Mon& mon) const override;
 
-    bool is_avail_for_all_mon() const override
+    int mon_cooldown() const override
+    {
+        return 9;
+    }
+
+    bool mon_can_learn() const override
     {
         return true;
     }
 
-    bool is_avail_for_player() const override
+    bool player_can_learn() const override
     {
         return false;
     }
@@ -1360,27 +1478,105 @@ public:
         return "Immolation";
     }
 
-    Spell_id id() const override
+    SpellId id() const override
     {
-        return Spell_id::burn;
+        return SpellId::burn;
     }
 
-    Intr_spell_shock shock_type_intr_cast() const override
+    SpellShock shock_type() const override
     {
-        return Intr_spell_shock::disturbing;
+        return SpellShock::disturbing;
     }
 
-    std::vector<std::string> descr() const override
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override
     {
+        (void)skill;
+
         return {""};
     }
-private:
-    Spell_effect_noticed cast_impl(Actor* const caster) const override;
 
-    int max_spi_cost() const override
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
+private:
+    int max_spi_cost(const SpellSkill skill) const override
     {
-        return player_bon::spi_occultist_can_cast_at_lvl(2);
+        (void)skill;
+
+        return 7;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return true;
     }
 };
 
-#endif
+class SpellDeafen: public Spell
+{
+public:
+    SpellDeafen() : Spell() {}
+
+    bool allow_mon_cast_now(Mon& mon) const override;
+
+    int mon_cooldown() const override
+    {
+        return 5;
+    }
+
+    bool mon_can_learn() const override
+    {
+        return true;
+    }
+
+    bool player_can_learn() const override
+    {
+        return false;
+    }
+
+    std::string name() const override
+    {
+        return "Deafen";
+    }
+
+    SpellId id() const override
+    {
+        return SpellId::deafen;
+    }
+
+    SpellShock shock_type() const override
+    {
+        return SpellShock::disturbing;
+    }
+
+    std::vector<std::string> descr_specific(
+        const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return {""};
+    }
+
+    void run_effect(Actor* const caster,
+                    const SpellSkill skill) const override;
+
+private:
+    int max_spi_cost(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return 4;
+    }
+
+    bool is_noisy(const SpellSkill skill) const override
+    {
+        (void)skill;
+
+        return true;
+    }
+};
+
+#endif // SPELLS_HPP

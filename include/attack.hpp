@@ -1,5 +1,5 @@
-#ifndef ATTACK_H
-#define ATTACK_H
+#ifndef ATTACK_HPP
+#define ATTACK_HPP
 
 #include <vector>
 #include <math.h>
@@ -12,77 +12,90 @@
 class Actor;
 class Wpn;
 
-class Att_data
+class AttData
 {
 public:
-    virtual ~Att_data() {}
+    virtual ~AttData() {}
 
-    Actor*              attacker;
-    Actor*              defender;
-    Ability_roll_result att_result;
-    int                 dmg;
-    bool                is_intrinsic_att, is_ethereal_defender_missed;
+    Actor* attacker;
+    Actor* defender;
+    int skill_mod;
+    int wpn_mod;
+    int dodging_mod;
+    int state_mod;
+    int hit_chance_tot;
+    ActionResult att_result;
+    int dmg;
+    bool is_intrinsic_att;
 
 protected:
-    //Never use this class directly (only through inheritance)
-    Att_data(Actor* const attacker,
-             Actor* const defender,
-             const Item& att_item);
+    // Never use this class directly (only through inheritance)
+    AttData(Actor* const attacker,
+            Actor* const defender,
+            const Item& att_item);
+
+    bool is_defender_aware(const Actor* const attacker,
+                           const Actor& defender) const;
 };
 
-class Melee_att_data: public Att_data
+class MeleeAttData: public AttData
 {
 public:
-    Melee_att_data(Actor* const attacker,
-                   Actor& defender,
-                   const Wpn& wpn);
+    MeleeAttData(Actor* const attacker,
+                 Actor& defender,
+                 const Wpn& wpn);
 
-    ~Melee_att_data() {}
+    ~MeleeAttData() {}
 
-    bool is_defender_dodging, is_backstab, is_weak_attack;
+    bool is_backstab;
+    bool is_weak_attack;
 };
 
-class Ranged_att_data: public Att_data
+class RangedAttData: public AttData
 {
 public:
-    Ranged_att_data(Actor* const attacker,
-                    const P& attacker_orign,
-                    const P& aim_pos,
-                    const P& cur_pos,
-                    const Wpn& wpn,
-                    Actor_size aim_lvl = Actor_size::none);
+    RangedAttData(Actor* const attacker,
+                  const P& attacker_origin,
+                  const P& aim_pos,
+                  const P& current_pos,
+                  const Wpn& wpn,
+                  ActorSize aim_lvl = ActorSize::undefined);
 
-    ~Ranged_att_data() {}
+    ~RangedAttData() {}
 
-    P               aim_pos;
-    int             hit_chance_tot;
-    Actor_size      intended_aim_lvl, defender_size;
-    std::string     verb_player_attacks, verb_other_attacks;
+    P aim_pos;
+    ActorSize intended_aim_lvl;
+    ActorSize defender_size;
+    std::string verb_player_attacks;
+    std::string verb_other_attacks;
+    int dist_mod;
 };
 
-class Throw_att_data: public Att_data
+class ThrowAttData: public AttData
 {
 public:
-    Throw_att_data(Actor* const attacker,
-                   const P& aim_pos,
-                   const P& cur_pos,
-                   const Item& item,
-                   Actor_size aim_lvl = Actor_size::none);
-    int         hit_chance_tot;
-    Actor_size  intended_aim_lvl, defender_size;
+    ThrowAttData(Actor* const attacker,
+                 const P& aim_pos,
+                 const P& current_pos,
+                 const Item& item,
+                 ActorSize aim_lvl = ActorSize::undefined);
+
+    ActorSize intended_aim_lvl;
+    ActorSize defender_size;
+    int dist_mod;
 };
 
 struct Projectile
 {
     Projectile() :
         pos                     (P(-1, -1)),
-        is_obstructed           (false),
+        is_dead                 (false),
         is_seen_by_player       (true),
         actor_hit               (nullptr),
         obstructed_in_element   (-1),
         is_done_rendering       (false),
         glyph                   (-1),
-        tile                    (Tile_id::empty),
+        tile                    (TileId::empty),
         clr                     (clr_white),
         att_data                (nullptr) {}
 
@@ -91,48 +104,48 @@ struct Projectile
         delete att_data;
     }
 
-    void set_att_data(Ranged_att_data* new_att_data)
+    void set_att_data(RangedAttData* new_att_data)
     {
         delete att_data;
 
         att_data = new_att_data;
     }
 
-    void set_tile(const Tile_id tile_to_render, const Clr& clr_to_render)
+    void set_tile(const TileId tile_to_render, const Clr& clr_to_render)
     {
         tile  = tile_to_render;
         clr   = clr_to_render;
     }
 
-    void set_glyph(const char GLYPH_TO_RENDER, const Clr& clr_to_render)
+    void set_glyph(const char glyph_to_render, const Clr& clr_to_render)
     {
-        glyph = GLYPH_TO_RENDER;
+        glyph = glyph_to_render;
         clr   = clr_to_render;
     }
 
-    P                 pos;
-    bool                is_obstructed;
-    bool                is_seen_by_player;
-    Actor*              actor_hit;
-    int                 obstructed_in_element;
-    bool                is_done_rendering;
-    char                glyph;
-    Tile_id             tile;
-    Clr                 clr;
-    Ranged_att_data*    att_data;
+    P pos;
+    bool is_dead;
+    bool is_seen_by_player;
+    Actor* actor_hit;
+    int obstructed_in_element;
+    bool is_done_rendering;
+    char glyph;
+    TileId tile;
+    Clr clr;
+    RangedAttData* att_data;
 };
 
-enum class Melee_hit_size
+enum class MeleeHitSize
 {
     small,
-    medium,
-    hard
-};
+        medium,
+        hard
+        };
 
 namespace attack
 {
 
-//NOTE: Attacker origin is needed since attacker may be a NULL pointer.
+// NOTE: Attacker origin is needed since attacker may be a NULL pointer.
 void melee(Actor* const attacker,
            const P& attacker_origin,
            Actor& defender,
@@ -147,7 +160,6 @@ void ranged_hit_chance(const Actor& attacker,
                        const Actor& defender,
                        const Wpn& wpn);
 
-} //attack
+} // attack
 
-#endif
-
+#endif // ATTACK_HPP

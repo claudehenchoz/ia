@@ -1,28 +1,33 @@
-#ifndef EXPLOSION_H
-#define EXPLOSION_H
+#ifndef EXPLOSION_HPP
+#define EXPLOSION_HPP
 
 #include <vector>
 
-#include "cmn_data.hpp"
-#include "cmn_types.hpp"
 #include "colors.hpp"
 #include "audio.hpp"
+#include "global.hpp"
 
 class Prop;
 
-enum class Expl_type
+enum class ExplType
 {
     expl,
     apply_prop
 };
 
-enum class Expl_src
+enum class EmitExplSnd
 {
-    misc,
-    player_use_moltv_intended
+    no,
+    yes
 };
 
-enum class Emit_expl_snd
+enum class ExplExclCenter
+{
+    no,
+    yes
+};
+
+enum class ExplIsGas
 {
     no,
     yes
@@ -31,19 +36,26 @@ enum class Emit_expl_snd
 namespace explosion
 {
 
-//NOTE: If "emit_expl_sound" is set to "no", this typically means that the caller should
-//      emit a custom sound before running the explosion (e.g. molotov explosion sound).
-void run(
-    const P& origin,
-    const Expl_type expl_type,
-    const Expl_src expl_src = Expl_src::misc,
-    const Emit_expl_snd emit_expl_snd = Emit_expl_snd::yes,
-    const int RADI_CHANGE = 0,
-    Prop* const prop = nullptr,
-    const Clr* const clr_override = nullptr);
+//
+// NOTE: If "emit_expl_sound" is set to "no", this typically means that the
+//       caller should emit a custom sound before running the explosion (e.g.
+//       molotov explosion sound).
+//
+void run(const P& origin,
+         const ExplType expl_type,
+         const EmitExplSnd emit_expl_snd = EmitExplSnd::yes,
+         const int radi_change = 0,
+         const ExplExclCenter exclude_center = ExplExclCenter::no,
+         std::vector<Prop*> properties_applied = {},
+         const Clr* const clr_override = nullptr,
+         const ExplIsGas is_gas = ExplIsGas::no);
 
-void run_smoke_explosion_at(const P& origin);
+void run_smoke_explosion_at(const P& origin,
+                            const int radi_change = 0);
 
-} //Explosion
+R explosion_area(const P& c,
+                 const int radi);
+
+} // explosion
 
 #endif

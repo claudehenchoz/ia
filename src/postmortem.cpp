@@ -5,44 +5,90 @@
 #include <vector>
 #include <string>
 
+#include "audio.hpp"
 #include "init.hpp"
-#include "render.hpp"
-#include "input.hpp"
+#include "io.hpp"
 #include "actor_player.hpp"
-#include "dungeon_master.hpp"
+#include "game.hpp"
 #include "map.hpp"
 #include "msg_log.hpp"
-#include "menu_input.hpp"
+#include "browser.hpp"
 #include "highscore.hpp"
 #include "player_bon.hpp"
 #include "text_format.hpp"
 #include "feature_rigid.hpp"
-#include "utils.hpp"
-#include "save_handling.hpp"
-
-namespace postmortem
-{
+#include "saving.hpp"
+#include "query.hpp"
+#include "create_character.hpp"
 
 namespace
 {
 
-void mk_info_lines(std::vector<Str_and_clr>& out)
+std::vector<StrAndClr> info_lines_;
+
+} // namespace
+
+// -----------------------------------------------------------------------------
+// Postmortem menu
+// -----------------------------------------------------------------------------
+PostmortemMenu::PostmortemMenu(const IsWin is_win) :
+    State       (),
+    browser_    (),
+    is_win_     (is_win)
 {
-    TRACE_FUNC_BEGIN;
+    browser_.reset(6);
+}
 
-    const Clr clr_heading  = clr_white_high;
-    const Clr clr_info     = clr_white;
+StateId PostmortemMenu::id()
+{
+    return StateId::postmortem_menu;
+}
 
-    const std::string offset            = "   ";
-    const std::string bullet_point_str  = offset + "* ";
+void PostmortemMenu::on_start()
+{
+    //
+    // Game summary file path
+    //
+    const std::string game_summary_time_stamp =
+        game::start_time().time_str(TimeType::second, false);
+
+    const std::string game_summary_filename =
+        map::player->name_a() +
+        "_" +
+        game_summary_time_stamp +
+        ".txt";
+
+    const std::string game_summary_file_path =
+        "res/data/" +
+        game_summary_filename;
+
+    //
+    // Highscore entry
+    //
+    const auto highscore_entry =
+        highscore::mk_entry_from_current_game_data(
+            game_summary_file_path,
+            is_win_);
+
+    highscore::append_entry_to_highscores_file(highscore_entry);
+
+    info_lines_.clear();
+
+    const Clr clr_heading = clr_white_lgt;
+
+    const Clr clr_info = clr_white;
+
+    const std::string offset = "   ";
 
     TRACE << "Finding number of killed monsters" << std::endl;
+
     std::vector<std::string> unique_killed_names;
+
     int nr_kills_tot_all_mon = 0;
 
     for (const auto& d : actor_data::data)
     {
-        if (d.id != Actor_id::player && d.nr_kills > 0)
+        if (d.id != ActorId::player && d.nr_kills > 0)
         {
             nr_kills_tot_all_mon += d.nr_kills;
 
@@ -53,112 +99,189 @@ void mk_info_lines(std::vector<Str_and_clr>& out)
         }
     }
 
-    const Highscore_entry* const score = highscore::final_score();
+    const std::string name = highscore_entry.name();
 
-    assert(score);
+    const std::string bg = player_bon::bg_title(highscore_entry.bg());
 
-    out.push_back({map::player->name_a(), clr_heading});
+    info_lines_.push_back({name + " (" + bg + ")", clr_heading});
 
-    const int DLVL = score->dlvl();
+    const int dlvl = highscore_entry.dlvl();
 
-    if (DLVL == 0)
+    if (dlvl == 0)
     {
-        out.push_back({bullet_point_str + "Died before entering the dungeon" , clr_info});
+        info_lines_.push_back(
+        {
+            offset + "Died before entering the dungeon",
+            clr_info
+        });
     }
-    else //DLVL is at least 1
+    else // DLVL is at least 1
     {
-        out.push_back({bullet_point_str + "Explored to the depth of dungeon level " +
-                       to_str(DLVL), clr_info
-                      });
+        info_lines_.push_back(
+        {
+            offset + "Explored to dungeon level " + std::to_string(dlvl),
+            clr_info
+        });
 
     }
 
-    out.push_back({bullet_point_str + "Was " + to_str(score->ins()) + "% insane", clr_info
-                  });
+    const int turn_count = highscore_entry.turn_count();
 
-    out.push_back({bullet_point_str + "Killed " + to_str(nr_kills_tot_all_mon) + " monsters",
-                   clr_info
-                  });
+    info_lines_.push_back(
+    {
+        offset + "Spent " + std::to_string(turn_count) + " turns",
+        clr_info
+    });
 
-    out.push_back({bullet_point_str + "Gained " + to_str(score->xp()) + " experience points",
-                   clr_info
-                  });
+    const int ins = highscore_entry.ins();
 
-    out.push_back({bullet_point_str + "Gained a score of " + to_str(score->score()), clr_info
-                  });
+    info_lines_.push_back(
+    {
+        offset + "Was " + std::to_string(ins) + "% insane",
 
-    const std::vector<const Ins_sympt*> sympts = insanity::active_sympts();
+        clr_info
+    });
+
+    info_lines_.push_back(
+    {
+        offset + "Killed " + std::to_string(nr_kills_tot_all_mon) +" monsters",
+        clr_info
+    });
+
+    const int xp = highscore_entry.xp();
+
+    info_lines_.push_back(
+    {
+        offset + "Gained " + std::to_string(xp) + " experience points",
+        clr_info
+    });
+
+    const int score = highscore_entry.score();
+
+    info_lines_.push_back(
+    {
+        offset + "Gained a score of " + std::to_string(score),
+        clr_info
+    });
+
+    const std::vector<const InsSympt*> sympts =
+        insanity::active_sympts();
 
     if (!sympts.empty())
     {
-        for (const Ins_sympt* const sympt : sympts)
+        for (const InsSympt* const sympt : sympts)
         {
-            const std::string sympt_descr = sympt->char_descr_msg();
+            const std::string sympt_descr = sympt->postmortem_msg();
 
             if (!sympt_descr.empty())
             {
-                out.push_back({bullet_point_str + sympt_descr, clr_info});
+                info_lines_.push_back(
+                {
+                    offset + sympt_descr, clr_info
+                });
             }
         }
     }
 
-    out.push_back({"", clr_info});
-    out.push_back({"Traits gained:", clr_heading});
-    std::string traits_line = player_bon::all_picked_traits_titles_line();
+    info_lines_.push_back({"", clr_info});
+
+    info_lines_.push_back({"Traits gained:", clr_heading});
+
+    std::string traits_line =
+        player_bon::all_picked_traits_titles_line();
 
     if (traits_line.empty())
     {
-        out.push_back({bullet_point_str + "None", clr_info});
+        info_lines_.push_back({offset + "None", clr_info});
     }
     else
     {
-        std::vector<std::string> abilities_lines;
-        text_format::split(traits_line, 60, abilities_lines);
+        const auto abilities_lines = text_format::split(traits_line, 60);
 
-        for (std::string& str : abilities_lines)
+        for (const std::string& str : abilities_lines)
         {
-            out.push_back({offset + str, clr_info});
+            info_lines_.push_back({offset + str, clr_info});
         }
     }
 
-    out.push_back({"", clr_info});
-    out.push_back({"Unique monsters killed:", clr_heading});
+    info_lines_.push_back({"", clr_info});
+
+    info_lines_.push_back(
+    {
+        "Unique monsters killed:",
+        clr_heading
+    });
 
     if (unique_killed_names.empty())
     {
-        out.push_back({bullet_point_str + "None", clr_info});
+        info_lines_.push_back(
+        {
+            offset + "None",
+            clr_info
+        });
     }
     else
     {
         for (std::string& monster_name : unique_killed_names)
         {
-            out.push_back({bullet_point_str + "" + monster_name, clr_info});
+            info_lines_.push_back(
+            {
+                offset + "" + monster_name,
+                clr_info
+            });
         }
     }
 
-    out.push_back({"", clr_info});
-    out.push_back({"History of " + map::player->name_the(), clr_heading});
+    info_lines_.push_back({"", clr_info});
 
-    const std::vector<History_event>& events = dungeon_master::history();
+    info_lines_.push_back(
+    {
+        "History of " + map::player->name_the(),
+        clr_heading
+    });
+
+    const std::vector<HistoryEvent>& events =
+        game::history();
+
+    int longest_turn_w = 0;
 
     for (const auto& event : events)
     {
-        std::string ev_str = to_str(event.TURN);
+        const int turn_w = std::to_string(event.turn).size();
 
-        const int TURN_STR_MAX_W = 10;
-
-        text_format::pad_before_to(ev_str, TURN_STR_MAX_W);
-
-        ev_str += ": " + event.msg;
-
-        out.push_back({offset + ev_str, clr_info});
+        longest_turn_w = std::max(turn_w, longest_turn_w);
     }
 
-    out.push_back({"", clr_info});
-    out.push_back({"Last messages:", clr_heading});
-    const std::vector< std::vector<Msg> >& history = msg_log::history();
+    for (const auto& event : events)
+    {
+        std::string ev_str = std::to_string(event.turn);
 
-    int history_element = std::max(0, int(history.size()) - 20);
+        const int turn_w = ev_str.size();
+
+        ev_str.append(longest_turn_w - turn_w, ' ');
+
+        ev_str += " " + event.msg;
+
+        info_lines_.push_back(
+        {
+            offset + ev_str,
+            clr_info
+        });
+    }
+
+    info_lines_.push_back({"", clr_info});
+
+    info_lines_.push_back(
+    {
+        "Last messages:",
+        clr_heading
+    });
+
+    const std::vector< std::vector<Msg> >& history =
+        msg_log::history();
+
+    int history_element =
+        std::max(0, (int)history.size() - 20);
 
     for (size_t i = history_element; i < history.size(); ++i)
     {
@@ -167,274 +290,342 @@ void mk_info_lines(std::vector<Str_and_clr>& out)
         for (size_t ii = 0; ii < history[i].size(); ii++)
         {
             std::string msg_str = "";
+
             history[i][ii].str_with_repeats(msg_str);
+
             row += msg_str + " ";
         }
 
-        out.push_back({offset + row, clr_info});
+        info_lines_.push_back(
+        {
+            offset + row,
+            clr_info
+        });
     }
 
-    out.push_back({"", clr_info});
+    info_lines_.push_back({"", clr_info});
 
     TRACE << "Drawing the final map" << std::endl;
-    out.push_back({"The final moment:", clr_heading});
 
-    for (int x = 0; x < MAP_W; ++x)
+    info_lines_.push_back(
     {
-        for (int y = 0; y < MAP_H; ++y)
-        {
-            for (int dx = -1; dx <= 1; ++dx)
-            {
-                for (int dy = -1; dy <= 1; ++dy)
-                {
-                    if (utils::is_pos_inside_map(P(x + dx, y + dy)))
-                    {
-                        const auto* const f = map::cells[x + dx][y + dy].rigid;
+        "The final moment:",
+        clr_heading
+    });
 
-                        if (f->is_los_passable())
-                        {
-                            map::cells[x][y].is_seen_by_player = true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    render::draw_map(); //To set the glyph array
-
-    for (int y = 0; y < MAP_H; ++y)
-    {
-        std::string cur_row = "";
-
-        for (int x = 0; x < MAP_W; ++x)
-        {
-            if (P(x, y) == map::player->pos)
-            {
-                cur_row.push_back('@');
-            }
-            else //Not player pos
-            {
-                const auto& wall_d          = feature_data::data(Feature_id::wall);
-                const auto& rubble_high_d   = feature_data::data(Feature_id::rubble_high);
-                const auto& statue_d        = feature_data::data(Feature_id::statue);
-
-                auto& cur_render_data = render::render_array[x][y];
-
-                if (
-                    cur_render_data.glyph == wall_d.glyph ||
-                    cur_render_data.glyph == rubble_high_d.glyph)
-                {
-                    cur_row.push_back('#');
-                }
-                else if (cur_render_data.glyph == statue_d.glyph)
-                {
-                    cur_row.push_back('M');
-                }
-                else //Not wall, rubble or statue
-                {
-                    cur_row.push_back(cur_render_data.glyph);
-                }
-            }
-        }
-
-        out.push_back({cur_row, clr_info});
-        cur_row.clear();
-    }
-
-    TRACE_FUNC_END;
-    TRACE_FUNC_END;
+    //
+    // Also dump the lines to a memorial file
+    //
+    mk_memorial_file(game_summary_file_path);
 }
 
-void render(const std::vector<Str_and_clr>& lines, const int TOP_ELEMENT)
+void PostmortemMenu::on_popped()
 {
-    render::clear_screen();
-
-    render::draw_info_scr_interface("Game summary",
-                                    Inf_screen_type::scrolling);
-
-    const int NR_LINES_TOT = int(lines.size());
-
-    const int MAX_NR_LINES_ON_SCR = SCREEN_H - 2;
-
-    int y_pos = 1;
-
-    for (
-        int i = TOP_ELEMENT;
-        i < NR_LINES_TOT && ((i - TOP_ELEMENT) < MAX_NR_LINES_ON_SCR);
-        ++i)
-    {
-        render::draw_text(lines[i].str,
-                          Panel::screen,
-                          P(0, y_pos++),
-                          lines[i].clr);
-    }
-
-    render::update_screen();
+    // The postmortem info is the last state which needs to access session data
+    init::cleanup_session();
 }
 
-void run_info(const std::vector<Str_and_clr>& lines)
+void PostmortemMenu::draw()
 {
-    const int LINE_JUMP           = 3;
-    const int MAX_NR_LINES_ON_SCR = SCREEN_H - 2;
-    const int NR_LINES_TOT        = lines.size();
+    P pos(48, 10);
 
-    int top_nr = 0;
-
-    while (true)
+    std::vector<std::string> labels =
     {
-        render(lines, top_nr);
+        "New journey",
+        "Show game summary",
+        "View high scores",
+        "View message log",
+        "Return to main menu",
+        "Quit the game"
+    };
 
-        const Key_data& d = input::input();
+    for (size_t i = 0; i < labels.size(); ++i)
+    {
+        const std::string& label = labels[i];
 
-        if (d.sdl_key == SDLK_DOWN || d.key == '2' || d.key == 'j')
-        {
-            top_nr += LINE_JUMP;
+        const Clr& clr =
+            browser_.is_at_idx(i) ?
+            clr_menu_highlight :
+            clr_menu_drk;
 
-            if (NR_LINES_TOT <= MAX_NR_LINES_ON_SCR)
-            {
-                top_nr = 0;
-            }
-            else
-            {
-                top_nr = std::min(NR_LINES_TOT - MAX_NR_LINES_ON_SCR, top_nr);
-            }
-        }
-        else if (d.sdl_key == SDLK_UP || d.key == '8' || d.key == 'k')
-        {
-            top_nr = std::max(0, top_nr - LINE_JUMP);
-        }
-        else if (d.sdl_key == SDLK_SPACE || d.sdl_key == SDLK_ESCAPE)
-        {
-            break;
-        }
+        io::draw_text(label,
+                      Panel::screen,
+                      pos,
+                      clr);
+
+        ++pos.y;
     }
+
+    if (config::is_tiles_mode())
+    {
+        io::draw_skull(P(24, 1));
+    }
+
+    io::draw_box(R(0, 0, screen_w - 1, screen_h - 1));
 }
 
-void mk_memorial_file(const std::vector<Str_and_clr>& lines)
+void PostmortemMenu::mk_memorial_file(const std::string path) const
 {
-    const std::string time_stamp =
-        dungeon_master::start_time().time_str(Time_type::second, false);
-
-    const std::string file_name = map::player->name_a() + "_" + time_stamp + ".txt";
-
-    const std::string file_path = "data/" + file_name;
-
-    //Write memorial file
+    // Write memorial file
     std::ofstream file;
-    file.open(file_path.data(), std::ios::trunc);
 
-    for (const Str_and_clr& line : lines)
+    file.open(path.c_str(), std::ios::trunc);
+
+    // Add info lines to file
+    for (const StrAndClr& line : info_lines_)
     {
         file << line.str << std::endl;
     }
 
-    file.close();
-
-    render::draw_text("Wrote file: " + file_path, Panel::screen, P(1, 1), clr_white_high);
-    render::update_screen();
-}
-
-void render_menu(const Menu_browser& browser)
-{
-    render::cover_panel(Panel::screen);
-
-    P pos(SCREEN_W / 2, 10);
-
-    //Draw options
-    render::draw_text_center("Show game summary", Panel::screen, pos,
-                             browser.is_at_idx(0) ? clr_menu_highlight : clr_menu_drk);
-    ++pos.y;
-
-    render::draw_text_center("Write memorial file", Panel::screen, pos,
-                             browser.is_at_idx(1) ? clr_menu_highlight : clr_menu_drk);
-    ++pos.y;
-
-    render::draw_text_center("View High Scores", Panel::screen, pos,
-                             browser.is_at_idx(2) ? clr_menu_highlight : clr_menu_drk);
-    ++pos.y;
-
-    render::draw_text_center("View message log", Panel::screen, pos,
-                             browser.is_at_idx(3) ? clr_menu_highlight : clr_menu_drk);
-    ++pos.y;
-
-    render::draw_text_center("Return to main menu", Panel::screen, pos,
-                             browser.is_at_idx(4) ? clr_menu_highlight : clr_menu_drk);
-    ++pos.y;
-
-    render::draw_text_center("Quit the game", Panel::screen, pos,
-                             browser.is_at_idx(5) ? clr_menu_highlight : clr_menu_drk);
-    ++pos.y;
-
-    if (config::is_tiles_mode())
+    // Add text map to file
+    for (int y = 0; y < map_h; ++y)
     {
-        render::draw_skull({10, 2});
-    }
+        std::string map_line;
 
-    render::draw_box({0, 0, SCREEN_W - 1, SCREEN_H - 1});
-
-    render::update_screen();
-}
-
-} //namespace
-
-void run(bool* const quit_game)
-{
-    std::vector<Str_and_clr> lines;
-
-    mk_info_lines(lines);
-
-    Menu_browser browser(6);
-
-    render_menu(browser);
-
-    while (true)
-    {
-        const Menu_action action = menu_input::action(browser);
-
-        switch (action)
+        for (int x = 0; x < map_w; ++x)
         {
-        case Menu_action::esc:
-        case Menu_action::space:
-            break;
+            char c = game::render_array[x][y].glyph;
 
-        case Menu_action::moved:
-            render_menu(browser);
-            break;
+            // Printable ASCII character?
+            if (c < 32 || c > 126)
+            {
+                // Nope - well, this is pretty difficult to handle in a good way
+                // as things are now. The current strategy is to show the symbol
+                // as a wall then (it's probably a wall, rubble, or a statue).
 
-        case Menu_action::selected:
-        case Menu_action::selected_shift:
-            if (browser.is_at_idx(0))
-            {
-                run_info(lines);
-                render_menu(browser);
+                //
+                // TODO: Perhaps text mode should strictly use only printable
+                //       basic ASCII symbols?
+                //
+                c = '#';
             }
-            else if (browser.is_at_idx(1))
-            {
-                mk_memorial_file(lines);
-            }
-            else if (browser.is_at_idx(2))
-            {
-                highscore::run_highscore_screen();
-                render_menu(browser);
-            }
-            else if (browser.is_at_idx(3))
-            {
-                msg_log::display_history();
-                render_menu(browser);
-            }
-            else if (browser.is_at_idx(4))
-            {
-                return;
-            }
-            else if (browser.is_at_idx(5))
-            {
-                *quit_game = true;
-                return;
-            }
-            break;
+
+            map_line += c;
         }
+
+        file << map_line << std::endl;
+    }
+
+    file.close();
+}
+
+void PostmortemMenu::update()
+{
+    const auto input = io::get(true);
+
+    const MenuAction action =
+        browser_.read(input,
+                      MenuInputMode::scrolling);
+
+    switch (action)
+    {
+    case MenuAction::selected:
+    case MenuAction::selected_shift:
+
+        //
+        // Display postmortem info
+        //
+        switch (browser_.y())
+        {
+        case 0:
+        {
+            //
+            // Exit screen
+            //
+            states::pop();
+
+            init::init_session();
+
+            std::unique_ptr<State> new_game_state(new NewGameState);
+
+            states::push(std::move(new_game_state));
+
+            audio::fade_out_music();
+
+            return;
+        }
+        break;
+
+        case 1:
+        {
+            std::unique_ptr<State> postmortem_info(new PostmortemInfo());
+
+            states::push(std::move(postmortem_info));
+        }
+        break;
+
+        //
+        // Show highscores
+        //
+        case 2:
+        {
+            std::unique_ptr<State> browse_highscore_state(new BrowseHighscore);
+
+            states::push(std::move(browse_highscore_state));
+        }
+        break;
+
+        //
+        // Display message history
+        //
+        case 3:
+        {
+            std::unique_ptr<State> msg_history_state(new MsgHistoryState);
+
+            states::push(std::move(msg_history_state));
+        }
+        break;
+
+        //
+        // Return to main menu
+        //
+        case 4:
+        {
+            //
+            // Exit screen
+            //
+            states::pop();
+
+            return;
+        }
+        break;
+
+        //
+        // Quit game
+        //
+        case 5:
+        {
+            //
+            // Bye!
+            //
+            states::pop_all();
+
+            return;
+        }
+        break;
+        }
+        break;
+
+    default:
+        break;
     }
 }
 
-} //Postmortem
+// -----------------------------------------------------------------------------
+// Postmortem info
+// -----------------------------------------------------------------------------
+StateId PostmortemInfo::id()
+{
+    return StateId::postmortem_info;
+}
+
+void PostmortemInfo::draw()
+{
+    io::clear_screen();
+
+    io::draw_info_scr_interface("Game summary",
+                                InfScreenType::scrolling);
+
+    const int nr_info_lines = (int)info_lines_.size();
+
+    const int nr_lines_tot = nr_info_lines + map_h;
+
+    int screen_y = 1;
+
+    const bool is_tiles_mode = config::is_tiles_mode();
+
+    for (int i = top_idx_;
+         (i < nr_lines_tot) && ((i - top_idx_) < max_nr_lines_on_scr_);
+         ++i)
+    {
+        const bool is_info_lines = i < nr_info_lines;
+
+        if (is_info_lines)
+        {
+            io::draw_text(info_lines_[i].str,
+                          Panel::screen,
+                          P(0, screen_y),
+                          info_lines_[i].clr);
+        }
+        else // Map lines
+        {
+            const int map_y = i - nr_info_lines;
+
+            ASSERT(map_y >= 0);
+            ASSERT(map_y < map_h);
+
+            if (is_tiles_mode)
+            {
+                for (int x = 0; x < map_w; ++x)
+                {
+                    const CellRenderData& d = game::render_array[x][map_y];
+
+                    io::draw_tile(d.tile,
+                                  Panel::screen,
+                                  P(x, screen_y),
+                                  d.clr,
+                                  d.clr_bg);
+                }
+            }
+            else // Text mode
+            {
+                for (int x = 0; x < map_w; ++x)
+                {
+                    const CellRenderData& d = game::render_array[x][map_y];
+
+                    io::draw_glyph(d.glyph,
+                                   Panel::screen,
+                                   P(x, screen_y),
+                                   d.clr,
+                                   true,
+                                   d.clr_bg);
+                }
+            }
+        }
+
+        ++screen_y;
+    }
+
+    io::update_screen();
+}
+
+void PostmortemInfo::update()
+{
+    const int line_jump = 3;
+
+    const int nr_lines_tot = info_lines_.size() + map_h;
+
+    const auto input = io::get(false);
+
+    switch (input.key)
+    {
+    case SDLK_DOWN:
+    case '2':
+    case 'j':
+        top_idx_ += line_jump;
+
+        if (nr_lines_tot <= max_nr_lines_on_scr_)
+        {
+            top_idx_ = 0;
+        }
+        else
+        {
+            top_idx_ = std::min(nr_lines_tot - max_nr_lines_on_scr_, top_idx_);
+        }
+        break;
+
+    case SDLK_UP:
+    case '8':
+    case 'k':
+        top_idx_ = std::max(0, top_idx_ - line_jump);
+        break;
+
+    case SDLK_SPACE:
+    case SDLK_ESCAPE:
+        //
+        // Exit screen
+        //
+        states::pop();
+        break;
+    }
+}

@@ -5,72 +5,83 @@
 #include <fstream>
 #include <SDL_image.h>
 
-#include "converters.hpp"
-#include "menu_input.hpp"
+#include "browser.hpp"
 #include "query.hpp"
-#include "render.hpp"
-#include "input.hpp"
+#include "io.hpp"
+#include "sdl_base.hpp"
 #include "audio.hpp"
 #include "text_format.hpp"
-#include "utils.hpp"
 
+// -----------------------------------------------------------------------------
+// Config
+// -----------------------------------------------------------------------------
 namespace config
 {
 
 namespace
 {
 
-const int NR_OPTIONS  = 14;
-const int OPT_Y0      = 1;
-
-std::string  font_name_                 = "";
-bool    is_fullscr_                     = false;
-bool    is_char_lines_icon_mode_        = false;
-bool    is_tiles_wall_full_square_      = false;
-bool    is_text_mode_wall_full_square_  = false;
-bool    is_ranged_wpn_meleee_prompt_    = false;
-bool    is_ranged_wpn_auto_reload_      = false;
-bool    is_intro_lvl_skipped_           = false;
-int     map_px_h_                       = -1;
-int     log_px_h_                       = -1;
-int     map_px_offset_h_                = -1;
-int     char_lines_px_h_                = -1;
-int     char_lines_px_offset_h_         = -1;
-int     scr_px_w_                       = -1;
-int     scr_px_h_                       = -1;
-int     delay_projectile_draw_          = -1;
-int     delay_shotgun_                  = -1;
-int     delay_explosion_                = -1;
-bool    is_bot_playing_                 = false;
-bool    is_audio_enabled_               = false;
-bool    is_tiles_mode_                  = false;
-int     cell_px_w_                      = -1;
-int     cell_px_h_                      = -1;
-
-std::vector<std::string> font_image_names;
-
-void set_cell_px_dim_dependent_variables()
+const std::vector<std::string> font_image_names
 {
-    map_px_h_                   = cell_px_h_ * MAP_H;
-    map_px_offset_h_            = cell_px_h_ * MAP_OFFSET_H;
-    log_px_h_                   = cell_px_h_ * LOG_H;
-    char_lines_px_h_            = cell_px_h_ * CHAR_LINES_H;
-    char_lines_px_offset_h_     = cell_px_h_ * CHAR_LINES_OFFSET_H;
-    scr_px_w_                   = cell_px_w_ * SCREEN_W;
-    scr_px_h_                   = cell_px_h_ * SCREEN_H;
-}
+    "8x12_DOS.png",
+    "11x19.png",
+    "11x22.png",
+    "12x24.png",
+    "16x24_v1.png",
+    "16x24_v2.png",
+    "16x24_v3.png",
+    "16x24_DOS.png",
+    "16x24_typewriter_v1.png",
+    "16x24_typewriter_v2.png",
+};
 
-void set_cell_px_dims_from_font_name()
+const int opt_y0_ = 1;
+const int opt_values_x_pos_ = 40;
+
+std::string font_name_ = "";
+bool use_light_fade_effect_ = false;
+bool is_fullscr_ = false;
+bool is_tiles_wall_full_square_ = false;
+bool is_text_mode_wall_full_square_ = false;
+bool is_light_explosive_prompt_ = false;
+bool is_ranged_wpn_meleee_prompt_ = false;
+bool is_ranged_wpn_auto_reload_ = false;
+bool is_intro_lvl_skipped_ = false;
+bool is_any_key_confirm_more_ = false;
+int map_px_h_ = -1;
+int log_px_h_ = -1;
+int map_px_offset_h_ = -1;
+int stat_lines_px_h_ = -1;
+int stat_lines_px_offset_h_ = -1;
+int scr_px_w_ = -1;
+int scr_px_h_ = -1;
+int delay_projectile_draw_ = -1;
+int delay_shotgun_ = -1;
+int delay_explosion_ = -1;
+std::string default_player_name_ = "";
+bool is_bot_playing_ = false;
+bool is_audio_enabled_ = false;
+bool is_amb_audio_enabled_ = false;
+bool is_tiles_mode_ = false;
+int cell_px_w_ = -1;
+int cell_px_h_ = -1;
+
+void update_render_dims()
 {
     TRACE_FUNC_BEGIN;
+
+    //
+    // Parse cell dimensions from the font name
+    //
     std::string font_name = font_name_;
 
-    char ch = 'a';
+    char ch = font_name.front();
 
     while (ch < '0' || ch > '9')
     {
         font_name.erase(begin(font_name));
-        ch = font_name[0];
+
+        ch = font_name.front();
     }
 
     std::string w_str = "";
@@ -78,20 +89,25 @@ void set_cell_px_dims_from_font_name()
     while (ch != 'x')
     {
         font_name.erase(begin(font_name));
+
         w_str += ch;
-        ch = font_name[0];
+
+        ch = font_name.front();
     }
 
     font_name.erase(begin(font_name));
-    ch = font_name[0];
+
+    ch = font_name.front();
 
     std::string h_str = "";
 
     while (ch != '_' && ch != '.')
     {
         font_name.erase(begin(font_name));
+
         h_str += ch;
-        ch = font_name[0];
+
+        ch = font_name.front();
     }
 
     TRACE << "Parsed font image name, found dims: "
@@ -99,402 +115,271 @@ void set_cell_px_dims_from_font_name()
 
     cell_px_w_ = to_int(w_str);
     cell_px_h_ = to_int(h_str);
+
+    map_px_h_ = cell_px_h_ * map_h;
+
+    map_px_offset_h_ = cell_px_h_ * map_offset_h;
+
+    log_px_h_ = cell_px_h_ * log_h;
+
+    stat_lines_px_h_ = cell_px_h_ * stat_lines_h;
+
+    stat_lines_px_offset_h_ = cell_px_h_ * stat_lines_offset_h;
+
+    scr_px_w_ = cell_px_w_ * screen_w;
+
+    scr_px_h_ = cell_px_h_ * screen_h;
+
     TRACE_FUNC_END;
 }
 
 void set_default_variables()
 {
     TRACE_FUNC_BEGIN;
-    is_audio_enabled_               = true;
-    is_tiles_mode_                  = true;
-    font_name_                      = "images/16x24_v1.png";
-    set_cell_px_dims_from_font_name();
-    is_fullscr_                     = false;
-    is_char_lines_icon_mode_        = false;
-    is_tiles_wall_full_square_      = false;
-    is_text_mode_wall_full_square_  = true;
-    is_intro_lvl_skipped_           = false;
-    is_ranged_wpn_meleee_prompt_    = true;
-    is_ranged_wpn_auto_reload_      = false;
-    delay_projectile_draw_          = 25;
-    delay_shotgun_                  = 75;
-    delay_explosion_                = 225;
+
+    is_audio_enabled_ = true;
+    is_amb_audio_enabled_ = true;
+    is_tiles_mode_ = true;
+    font_name_ = "16x24_v1.png";
+
+    update_render_dims();
+
+    use_light_fade_effect_ = false;
+    is_fullscr_ = false;
+    is_tiles_wall_full_square_ = false;
+    is_text_mode_wall_full_square_ = true;
+    is_intro_lvl_skipped_ = false;
+    is_any_key_confirm_more_ = true;
+    is_light_explosive_prompt_ = false;
+    is_ranged_wpn_meleee_prompt_ = true;
+    is_ranged_wpn_auto_reload_ = false;
+    delay_projectile_draw_ = 30;
+    delay_shotgun_ = 75;
+    delay_explosion_ = 225;
+    default_player_name_ = "";
+
     TRACE_FUNC_END;
 }
 
-void player_sets_option(const Menu_browser* const browser, const int OPTION_VALUES_X_POS)
+void player_sets_option(const MenuBrowser& browser)
 {
-    switch (browser->y())
+    switch (browser.y())
     {
-    case 0:
+    case 0: // Audio
+    {
         is_audio_enabled_ = !is_audio_enabled_;
-        audio::init();
-        break;
 
-    case 1:
+        audio::init();
+    }
+    break;
+
+    case 1: // Ambient audio
+    {
+        is_amb_audio_enabled_ = !is_amb_audio_enabled_;
+
+        audio::init();
+    }
+    break;
+
+    case 2: // Tiles mode
+    {
         is_tiles_mode_ = !is_tiles_mode_;
 
-        if (is_tiles_mode_ && (cell_px_w_ != 16 || cell_px_h_ != 24))
+        if (is_tiles_mode_ &&
+            ((cell_px_w_ != 16) ||
+             (cell_px_h_ != 24)))
         {
-            font_name_ = "images/16x24_v1.png";
+            font_name_ = "16x24_v1.png";
         }
 
-        set_cell_px_dims_from_font_name();
-        set_cell_px_dim_dependent_variables();
-        render::init();
-        break;
+        update_render_dims();
 
-    case 2:
-        for (unsigned int i = 0; i < font_image_names.size(); ++i)
+        sdl_base::init();
+
+        io::init();
+    }
+    break;
+
+    case 3: // Font
+    {
+        // Set next font
+        for (size_t i = 0; i < font_image_names.size(); ++i)
         {
             if (font_name_ == font_image_names[i])
             {
-                font_name_ = i == font_image_names.size() - 1 ?
-                             font_image_names.front() :
-                             font_image_names[i + 1];
+                font_name_ =
+                    (i == (font_image_names.size() - 1)) ?
+                    font_image_names.front() :
+                    font_image_names[i + 1];
                 break;
             }
         }
 
-        set_cell_px_dims_from_font_name();
+        update_render_dims();
 
+        // If this is tiles mode - skip fonts until we find one with 16x24 size
         if (is_tiles_mode_)
         {
-            while (cell_px_w_ != 16 || cell_px_h_ != 24)
+            while ((cell_px_w_ != 16) ||
+                   (cell_px_h_ != 24))
             {
-                for (unsigned int i = 0; i < font_image_names.size(); ++i)
+                for (size_t i = 0; i < font_image_names.size(); ++i)
                 {
                     if (font_name_ == font_image_names[i])
                     {
-                        font_name_ = i == font_image_names.size() - 1 ?
-                                     font_image_names.front() :
-                                     font_image_names[i + 1];
+                        font_name_ =
+                            (i == font_image_names.size() - 1) ?
+                            font_image_names.front() :
+                            font_image_names[i + 1];
                         break;
                     }
                 }
 
-                set_cell_px_dims_from_font_name();
+                update_render_dims();
             }
         }
 
-        set_cell_px_dim_dependent_variables();
-        render::init();
-        break;
+        sdl_base::init();
 
-    case 3:
-        is_fullscr_ = !is_fullscr_;
-        render::init();
-        break;
+        io::init();
+    }
+    break;
 
-    case 4:
-        is_char_lines_icon_mode_ = !is_char_lines_icon_mode_;
-        break;
+    case 4: // Light fade effect
+    {
+        use_light_fade_effect_ = !use_light_fade_effect_;
+    }
+    break;
 
-    case 5:
+    case 5: // Fullscreen
+    {
+        toggle_fullscreen();
+    }
+    break;
+
+    case 6: // Tiles mode wall symbol
+    {
         is_tiles_wall_full_square_ = !is_tiles_wall_full_square_;
-        break;
+    }
+    break;
 
-    case 6:
+    case 7: // Text mode wall symbol
+    {
         is_text_mode_wall_full_square_ = !is_text_mode_wall_full_square_;
-        break;
+    }
+    break;
 
-    case 7:
+    case 8: // Skip intro level
+    {
         is_intro_lvl_skipped_ = !is_intro_lvl_skipped_;
-        break;
+    }
+    break;
 
-    case 8:
+    case 9: // Confirm "more" with any key
+    {
+        is_any_key_confirm_more_ = !is_any_key_confirm_more_;
+    }
+    break;
+
+    case 10: // Print warning when lighting explovies
+    {
+        is_light_explosive_prompt_ = !is_light_explosive_prompt_;
+    }
+    break;
+
+    case 11: // Print warning when melee attacking with ranged weapons
+    {
         is_ranged_wpn_meleee_prompt_ = !is_ranged_wpn_meleee_prompt_;
-        break;
+    }
+    break;
 
-    case 9:
+    case 12: // Ranged weapon auto reload
+    {
         is_ranged_wpn_auto_reload_ = !is_ranged_wpn_auto_reload_;
-        break;
+    }
+    break;
 
-    case 10:
+    case 13: // Projectile delay
     {
-        const P p(OPTION_VALUES_X_POS, OPT_Y0 + browser->y());
+        const P p(opt_values_x_pos_, opt_y0_ + browser.y());
 
-        const int NR = query::number(p, clr_menu_highlight, 1, 3, delay_projectile_draw_, true);
+        const int nr = query::number(
+            p,
+            clr_menu_highlight,
+            1,
+            3,
+            delay_projectile_draw_,
+            true);
 
-        if (NR != -1)
+        if (nr != -1)
         {
-            delay_projectile_draw_ = NR;
+            delay_projectile_draw_ = nr;
         }
-    } break;
+    }
+    break;
 
-    case 11:
+    case 14: // Shotgun delay
     {
-        const P p(OPTION_VALUES_X_POS, OPT_Y0 + browser->y());
+        const P p(opt_values_x_pos_, opt_y0_ + browser.y());
 
-        const int NR = query::number(p, clr_menu_highlight, 1, 3, delay_shotgun_, true);
+        const int nr = query::number(
+            p,
+            clr_menu_highlight,
+            1,
+            3,
+            delay_shotgun_,
+            true);
 
-        if (NR != -1)
+        if (nr != -1)
         {
-            delay_shotgun_ = NR;
+            delay_shotgun_ = nr;
         }
-    } break;
+    }
+    break;
 
-    case 12:
+    case 15: // Explosion delay
     {
-        const P p(OPTION_VALUES_X_POS, OPT_Y0 + browser->y());
-        const int NR = query::number(p, clr_menu_highlight, 1, 3, delay_explosion_, true);
+        const P p(opt_values_x_pos_, opt_y0_ + browser.y());
 
-        if (NR != -1)
+        const int nr = query::number(
+            p,
+            clr_menu_highlight,
+            1,
+            3,
+            delay_explosion_,
+            true);
+
+        if (nr != -1)
         {
-            delay_explosion_ = NR;
+            delay_explosion_ = nr;
         }
-    } break;
+    }
+    break;
 
-    case 13:
+    case 16: // Reset to defaults
+    {
         set_default_variables();
-        set_cell_px_dims_from_font_name();
-        set_cell_px_dim_dependent_variables();
-        render::init();
+
+        update_render_dims();
+
+        sdl_base::init();
+
+        io::init();
+
         audio::init();
-        break;
+    }
+    break;
 
     default:
-        TRACE << "Bad option number" << std::endl;
-        assert(false);
+        ASSERT(false);
         break;
     }
-}
-
-void draw(const Menu_browser* const browser, const int OPTION_VALUES_X_POS)
-{
-    render::clear_screen();
-
-    int opt_nr = 0;
-
-    const int X1 = OPTION_VALUES_X_POS;
-
-    std::string str = "";
-
-    render::draw_text("-Options-", Panel::screen, P(0, 0), clr_white);
-
-    render::draw_text("Play audio",
-                      Panel::screen,
-                      P(0, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    render::draw_text(":", Panel::screen,
-                      P(X1 - 2, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    str = is_audio_enabled_ ? "Yes" : "No";
-    render::draw_text(str,
-                      Panel::screen,
-                      P(X1, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    opt_nr++;
-
-    render::draw_text("Use tile set",
-                      Panel::screen,
-                      P(0, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    render::draw_text(":", Panel::screen,
-                      P(X1 - 2, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    str = is_tiles_mode_ ? "Yes" : "No";
-    render::draw_text(str,
-                      Panel::screen,
-                      P(X1, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    opt_nr++;
-
-    render::draw_text("Font",
-                      Panel::screen,
-                      P(0, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    render::draw_text(":",
-                      Panel::screen,
-                      P(X1 - 2, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    std::string font_disp_name;
-    text_format::replace_all(font_name_,      "images/",  "",   font_disp_name);
-    text_format::replace_all(font_disp_name,  "_",        " ",  font_disp_name);
-    text_format::replace_all(font_disp_name,  ".png",     "",   font_disp_name);
-    render::draw_text(font_disp_name, Panel::screen, P(X1, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ?
-                      clr_menu_highlight : clr_menu_drk);
-    opt_nr++;
-
-    render::draw_text("Fullscreen",
-                      Panel::screen,
-                      P(0, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    render::draw_text(":",
-                      Panel::screen,
-                      P(X1 - 2, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    render::draw_text(is_fullscr_ ? "Yes" : "No",
-                      Panel::screen,
-                      P(X1, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ?
-                      clr_menu_highlight : clr_menu_drk);
-    opt_nr++;
-
-    render::draw_text("Use icons in character lines",
-                      Panel::screen,
-                      P(0, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    render::draw_text(":",
-                      Panel::screen,
-                      P(X1 - 2, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    render::draw_text(is_char_lines_icon_mode_ ? "Yes" : "No",
-                      Panel::screen,
-                      P(X1, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    opt_nr++;
-
-    render::draw_text("Tiles mode wall symbol",
-                      Panel::screen,
-                      P(0, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    render::draw_text(":",
-                      Panel::screen,
-                      P(X1 - 2, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    str = is_tiles_wall_full_square_ ? "Full square" : "Pseudo-3D";
-    render::draw_text(str,
-                      Panel::screen,
-                      P(X1, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    opt_nr++;
-
-    render::draw_text("Text mode wall symbol",
-                      Panel::screen,
-                      P(0, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    render::draw_text(":",
-                      Panel::screen,
-                      P(X1 - 2, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    str = is_text_mode_wall_full_square_ ? "Full square" : "Hash sign";
-    render::draw_text(str,
-                      Panel::screen,
-                      P(X1, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    opt_nr++;
-
-    render::draw_text("Skip intro level",
-                      Panel::screen,
-                      P(0, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    render::draw_text(":",
-                      Panel::screen,
-                      P(X1 - 2, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    str = is_intro_lvl_skipped_ ? "Yes" : "No";
-    render::draw_text(str,
-                      Panel::screen,
-                      P(X1, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    opt_nr++;
-
-    render::draw_text("Ranged weapon melee attack warning",
-                      Panel::screen,
-                      P(0, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    render::draw_text(":",
-                      Panel::screen,
-                      P(X1 - 2, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    str = is_ranged_wpn_meleee_prompt_ ? "Yes" : "No";
-    render::draw_text(str,
-                      Panel::screen,
-                      P(X1, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    opt_nr++;
-
-    render::draw_text("Ranged weapon auto reload",
-                      Panel::screen,
-                      P(0, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    render::draw_text(":",
-                      Panel::screen,
-                      P(X1 - 2, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    str = is_ranged_wpn_auto_reload_ ? "Yes" : "No";
-    render::draw_text(str,
-                      Panel::screen,
-                      P(X1, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    opt_nr++;
-
-    render::draw_text("Projectile delay (ms)",
-                      Panel::screen,
-                      P(0, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    render::draw_text(":",
-                      Panel::screen,
-                      P(X1 - 2, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    render::draw_text(to_str(delay_projectile_draw_),
-                      Panel::screen,
-                      P(X1, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    opt_nr++;
-
-    render::draw_text("Shotgun delay (ms)",
-                      Panel::screen,
-                      P(0, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    render::draw_text(":",
-                      Panel::screen,
-                      P(X1 - 2, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    render::draw_text(to_str(delay_shotgun_),
-                      Panel::screen,
-                      P(X1, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    opt_nr++;
-
-    render::draw_text("Explosion delay (ms)",
-                      Panel::screen,
-                      P(0, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    render::draw_text(":",
-                      Panel::screen,
-                      P(X1 - 2, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    render::draw_text(to_str(delay_explosion_),
-                      Panel::screen,
-                      P(X1, OPT_Y0 + opt_nr),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-    opt_nr++;
-
-    render::draw_text("Reset to defaults",
-                      Panel::screen,
-                      P(0, OPT_Y0 + opt_nr + 1),
-                      browser->y() == opt_nr ? clr_menu_highlight : clr_menu_drk);
-
-    render::draw_text("[space/esc] to confirm changes",
-                      Panel::screen,
-                      P(0, OPT_Y0 + opt_nr + 4),
-                      clr_white);
-
-    str = "Note: Tile set requires resolution 1280x720 or higher. Using Text mode for smaller "
-          "resolutions is recommended (fonts of different sizes are available)";
-
-    std::vector<std::string> lines;
-
-    text_format::split(str, SCREEN_W, lines);
-
-    int y = SCREEN_H - lines.size();
-
-    for (const std::string& line : lines)
-    {
-        render::draw_text(line, Panel::screen, P(0, y), clr_gray);
-        ++y;
-    }
-
-    render::update_screen();
 }
 
 void read_file(std::vector<std::string>& lines)
 {
     std::ifstream file;
-    file.open("data/config");
+    file.open("res/data/config");
 
     if (file.is_open())
     {
@@ -513,87 +398,82 @@ void set_variables_from_lines(std::vector<std::string>& lines)
 {
     TRACE_FUNC_BEGIN;
 
-    std::string cur_line = lines.front();
-    is_audio_enabled_ = cur_line == "1";
+    is_audio_enabled_ = lines.front() == "1";
     lines.erase(begin(lines));
 
-    cur_line = lines.front();
+    is_amb_audio_enabled_ = lines.front() == "1";
+    lines.erase(begin(lines));
 
-    if (cur_line == "0")
+    is_tiles_mode_ = lines.front() == "1";
+    lines.erase(begin(lines));
+
+    font_name_ = lines.front();
+    lines.erase(begin(lines));
+
+    update_render_dims();
+
+    use_light_fade_effect_ = lines.front() == "1";
+    lines.erase(begin(lines));
+
+    is_fullscr_ = lines.front() == "1";
+    lines.erase(begin(lines));
+
+    is_tiles_wall_full_square_ = lines.front() == "1";
+    lines.erase(begin(lines));
+
+    is_text_mode_wall_full_square_ = lines.front() == "1";
+    lines.erase(begin(lines));
+
+    is_intro_lvl_skipped_ = lines.front() == "1";
+    lines.erase(begin(lines));
+
+    is_any_key_confirm_more_ = lines.front() == "1";
+    lines.erase(begin(lines));
+
+    is_light_explosive_prompt_ = lines.front() == "1";
+    lines.erase(begin(lines));
+
+    is_ranged_wpn_meleee_prompt_ = lines.front() == "1";
+    lines.erase(begin(lines));
+
+    is_ranged_wpn_auto_reload_ = lines.front() == "1";
+    lines.erase(begin(lines));
+
+    delay_projectile_draw_ = to_int(lines.front());
+    lines.erase(begin(lines));
+
+    delay_shotgun_ = to_int(lines.front());
+    lines.erase(begin(lines));
+
+    delay_explosion_ = to_int(lines.front());
+    lines.erase(begin(lines));
+
+    default_player_name_ = "";
+
+    if (lines.front() == "1")
     {
-        is_tiles_mode_ = false;
-    }
-    else
-    {
-        is_tiles_mode_ = true;
+        lines.erase(begin(lines));
 
-        if (cell_px_w_ != 16 || cell_px_h_ != 24)
-        {
-            font_name_ = "images/16x24_v1.png";
-            set_cell_px_dims_from_font_name();
-        }
+        default_player_name_ = lines.front();
     }
 
     lines.erase(begin(lines));
 
-    cur_line = lines.front();
-    font_name_ = cur_line;
-    set_cell_px_dims_from_font_name();
-    lines.erase(begin(lines));
-
-    cur_line = lines.front();
-    is_fullscr_ = cur_line == "1";
-    lines.erase(begin(lines));
-
-    cur_line = lines.front();
-    is_char_lines_icon_mode_ = cur_line == "1";
-    lines.erase(begin(lines));
-
-    cur_line = lines.front();
-    is_tiles_wall_full_square_ = cur_line == "1";
-    lines.erase(begin(lines));
-
-    cur_line = lines.front();
-    is_text_mode_wall_full_square_ = cur_line == "1";
-    lines.erase(begin(lines));
-
-    cur_line = lines.front();
-    is_intro_lvl_skipped_ = cur_line == "1";
-    lines.erase(begin(lines));
-
-    cur_line = lines.front();
-    is_ranged_wpn_meleee_prompt_ = cur_line == "1";
-    lines.erase(begin(lines));
-
-    cur_line = lines.front();
-    is_ranged_wpn_auto_reload_ = cur_line == "1";
-    lines.erase(begin(lines));
-
-    cur_line = lines.front();
-    delay_projectile_draw_ = to_int(cur_line);
-    lines.erase(begin(lines));
-
-    cur_line = lines.front();
-    delay_shotgun_ = to_int(cur_line);
-    lines.erase(begin(lines));
-
-    cur_line = lines.front();
-    delay_explosion_ = to_int(cur_line);
-    lines.erase(begin(lines));
+    ASSERT(lines.empty());
 
     TRACE_FUNC_END;
 }
 
-void write_lines_to_file(std::vector<std::string>& lines)
+void write_lines_to_file(const std::vector<std::string>& lines)
 {
     std::ofstream file;
-    file.open("data/config", std::ios::trunc);
+    file.open("res/data/config", std::ios::trunc);
 
     for (size_t i = 0; i < lines.size(); ++i)
     {
         file << lines[i];
 
-        if (i != lines.size() - 1)
+        if (i != (lines.size() - 1))
         {
             file << std::endl;
         }
@@ -602,143 +482,450 @@ void write_lines_to_file(std::vector<std::string>& lines)
     file.close();
 }
 
-void set_lines_from_variables(std::vector<std::string>& lines)
+std::vector<std::string> lines_from_variables()
 {
     TRACE_FUNC_BEGIN;
+
+    std::vector<std::string> lines;
+
     lines.clear();
-    lines.push_back(is_audio_enabled_               ? "1" : "0");
-    lines.push_back(is_tiles_mode_                  ? "1" : "0");
+    lines.push_back(is_audio_enabled_ ? "1" : "0");
+    lines.push_back(is_amb_audio_enabled_ ? "1" : "0");
+    lines.push_back(is_tiles_mode_ ? "1" : "0");
     lines.push_back(font_name_);
-    lines.push_back(is_fullscr_                     ? "1" : "0");
-    lines.push_back(is_char_lines_icon_mode_        ? "1" : "0");
-    lines.push_back(is_tiles_wall_full_square_      ? "1" : "0");
-    lines.push_back(is_text_mode_wall_full_square_  ? "1" : "0");
-    lines.push_back(is_intro_lvl_skipped_           ? "1" : "0");
-    lines.push_back(is_ranged_wpn_meleee_prompt_    ? "1" : "0");
-    lines.push_back(is_ranged_wpn_auto_reload_      ? "1" : "0");
-    lines.push_back(to_str(delay_projectile_draw_));
-    lines.push_back(to_str(delay_shotgun_));
-    lines.push_back(to_str(delay_explosion_));
+    lines.push_back(use_light_fade_effect_ ? "1" : "0");
+    lines.push_back(is_fullscr_ ? "1" : "0");
+    lines.push_back(is_tiles_wall_full_square_ ? "1" : "0");
+    lines.push_back(is_text_mode_wall_full_square_ ? "1" : "0");
+    lines.push_back(is_intro_lvl_skipped_ ? "1" : "0");
+    lines.push_back(is_any_key_confirm_more_ ? "1" : "0");
+    lines.push_back(is_light_explosive_prompt_ ? "1" : "0");
+    lines.push_back(is_ranged_wpn_meleee_prompt_ ? "1" : "0");
+    lines.push_back(is_ranged_wpn_auto_reload_ ? "1" : "0");
+    lines.push_back(std::to_string(delay_projectile_draw_));
+    lines.push_back(std::to_string(delay_shotgun_));
+    lines.push_back(std::to_string(delay_explosion_));
+
+    if (default_player_name_.empty())
+    {
+        lines.push_back("0");
+    }
+    else // Default player name has been set
+    {
+        lines.push_back("1");
+
+        lines.push_back(default_player_name_);
+    }
+
     TRACE_FUNC_END;
+
+    return lines;
 }
 
-} //Namespace
+} // namespace
 
 void init()
 {
-    font_name_     = "";
+    font_name_ = "";
     is_bot_playing_ = false;
-
-    font_image_names.clear();
-    font_image_names.push_back("images/8x12_DOS.png");
-    font_image_names.push_back("images/11x19.png");
-    font_image_names.push_back("images/11x22.png");
-    font_image_names.push_back("images/12x24.png");
-    font_image_names.push_back("images/16x24_v1.png");
-    font_image_names.push_back("images/16x24_v2.png");
-    font_image_names.push_back("images/16x24_v3.png");
-    font_image_names.push_back("images/16x24_DOS.png");
-    font_image_names.push_back("images/16x24_typewriter_v1.png");
-    font_image_names.push_back("images/16x24_typewriter_v2.png");
 
     set_default_variables();
 
     std::vector<std::string> lines;
 
-    //Load config file, if it exists
+    // Load config file, if it exists
     read_file(lines);
 
-    if (lines.empty())
+    if (!lines.empty())
     {
-        set_lines_from_variables(lines);
-    }
-    else //A configuration did exist
-    {
+        // A config file exists, set values from parsed config lines
         set_variables_from_lines(lines);
     }
 
-    set_cell_px_dim_dependent_variables();
+    update_render_dims();
 }
 
-bool        is_tiles_mode()                 {return is_tiles_mode_;}
-std::string font_name()                     {return font_name_;}
-bool        is_fullscreen()                 {return is_fullscr_;}
-bool        is_char_lines_icon_mode()       {return is_char_lines_icon_mode_;}
-int         scr_px_w()                      {return scr_px_w_;}
-int         scr_px_h()                      {return scr_px_h_;}
-int         cell_px_w()                     {return cell_px_w_;}
-int         cell_px_h()                     {return cell_px_h_;}
-int         log_px_h()                      {return log_px_h_;}
-int         map_px_h()                      {return map_px_h_;}
-int         map_px_offset_h()               {return map_px_offset_h_;}
-int         char_lines_px_offset_h()        {return char_lines_px_offset_h_;}
-int         char_lines_px_h()               {return char_lines_px_h_;}
-bool        is_text_mode_wall_full_square() {return is_text_mode_wall_full_square_;}
-bool        is_tiles_wall_full_square()     {return is_tiles_wall_full_square_;}
-bool        is_audio_enabled()              {return is_audio_enabled_;}
-bool        is_bot_playing()                {return is_bot_playing_;}
-void        toggle_bot_playing()            {is_bot_playing_ = !is_bot_playing_;}
-bool        is_ranged_wpn_meleee_prompt()   {return is_ranged_wpn_meleee_prompt_;}
-bool        is_ranged_wpn_auto_reload()     {return is_ranged_wpn_auto_reload_;}
-bool        is_intro_lvl_skipped()          {return is_intro_lvl_skipped_;}
-int         delay_projectile_draw()         {return delay_projectile_draw_;}
-int         delay_shotgun()                 {return delay_shotgun_;}
-int         delay_explosion()               {return delay_explosion_;}
-
-void run_options_menu()
+bool is_tiles_mode()
 {
-    Menu_browser browser(NR_OPTIONS);
-    std::vector<std::string> lines;
+    return is_tiles_mode_;
+}
 
-    const int OPTION_VALUES_X_POS = 40;
+std::string font_name()
+{
+    return font_name_;
+}
 
-    draw(&browser, OPTION_VALUES_X_POS);
+bool use_light_fade_effect()
+{
+    return use_light_fade_effect_;
+}
 
-    while (true)
-    {
-        const Menu_action action = menu_input::action(browser);
+bool is_fullscreen()
+{
+    return is_fullscr_;
+}
 
-        switch (action)
-        {
-        case Menu_action::moved:
-            draw(&browser, OPTION_VALUES_X_POS);
-            break;
+int scr_px_w()
+{
+    return scr_px_w_;
+}
 
-        case Menu_action::esc:
-        case Menu_action::space:
-            //Since Text mode wall symbol may have changed,
-            //we need to redefine the feature data list
-            feature_data::init();
-            return;
+int scr_px_h()
+{
+    return scr_px_h_;
+}
 
-        case Menu_action::selected:
-            draw(&browser, OPTION_VALUES_X_POS);
-            player_sets_option(&browser, OPTION_VALUES_X_POS);
-            set_lines_from_variables(lines);
-            write_lines_to_file(lines);
-            draw(&browser, OPTION_VALUES_X_POS);
-            break;
+int cell_px_w()
+{
+    return cell_px_w_;
+}
 
-        default:
-            break;
-        }
-    }
+int cell_px_h()
+{
+    return cell_px_h_;
+}
+
+int log_px_h()
+{
+    return log_px_h_;
+}
+
+int map_px_h()
+{
+    return map_px_h_;
+}
+
+int map_px_offset_h()
+{
+    return map_px_offset_h_;
+}
+
+int stat_lines_px_offset_h()
+{
+    return stat_lines_px_offset_h_;
+}
+int stat_lines_px_h()
+{
+    return stat_lines_px_h_;
+}
+
+bool is_text_mode_wall_full_square()
+{
+    return is_text_mode_wall_full_square_;
+}
+
+bool is_tiles_wall_full_square()
+{
+    return is_tiles_wall_full_square_;
+}
+
+bool is_audio_enabled()
+{
+    return is_audio_enabled_;
+}
+
+bool is_amb_audio_enabled()
+{
+    return is_amb_audio_enabled_;
+}
+
+bool is_bot_playing()
+{
+    return is_bot_playing_;
+}
+
+void toggle_bot_playing()
+{
+    is_bot_playing_ = !is_bot_playing_;
+}
+
+bool is_light_explosive_prompt()
+{
+    return is_light_explosive_prompt_;
+}
+
+bool is_ranged_wpn_meleee_prompt()
+{
+    return is_ranged_wpn_meleee_prompt_;
+}
+
+bool is_ranged_wpn_auto_reload()
+{
+    return is_ranged_wpn_auto_reload_;
+}
+
+bool is_intro_lvl_skipped()
+{
+    return is_intro_lvl_skipped_;
+}
+
+bool is_any_key_confirm_more()
+{
+    return is_any_key_confirm_more_;
+}
+
+int delay_projectile_draw()
+{
+    return delay_projectile_draw_;
+}
+int delay_shotgun()
+{
+    return delay_shotgun_;
+}
+
+int delay_explosion()
+{
+    return delay_explosion_;
+}
+
+void set_default_player_name(const std::string& name)
+{
+    default_player_name_ = name;
+
+    const auto lines = lines_from_variables();
+
+    write_lines_to_file(lines);
+}
+
+std::string default_player_name()
+{
+    return default_player_name_;
 }
 
 void toggle_fullscreen()
 {
     is_fullscr_ = !is_fullscr_;
-    set_cell_px_dims_from_font_name();
-    set_cell_px_dim_dependent_variables();
 
-    render::on_toggle_fullscreen();
+    update_render_dims();
 
-    std::vector<std::string> lines;
-    set_lines_from_variables(lines);
+    io::clear_screen();
+
+    io::update_screen();
+
+    sdl_base::init();
+
+    io::init();
+
+    states::draw();
+
+    io::update_screen();
+
+    const auto lines = lines_from_variables();
+
     write_lines_to_file(lines);
 }
 
-} //Config
+} // config
+
+// -----------------------------------------------------------------------------
+// Config state
+// -----------------------------------------------------------------------------
+ConfigState::ConfigState() :
+    State       (),
+    browser_    (17)
+{
+
+}
+
+StateId ConfigState::id()
+{
+    return StateId::config;
+}
+
+void ConfigState::update()
+{
+    const auto input = io::get(true);
+
+    const MenuAction action =
+        browser_.read(input, MenuInputMode::scrolling);
+
+    switch (action)
+    {
+    case MenuAction::esc:
+    case MenuAction::space:
+    {
+        // Since text mode wall symbol may have changed, we need to
+        // redefine the feature data list
+        feature_data::init();
+
+        states::pop();
+
+        return;
+    }
+    break;
+
+    case MenuAction::selected:
+    {
+        config::player_sets_option(browser_);
+
+        const auto lines = config::lines_from_variables();
+
+        config::write_lines_to_file(lines);
+
+        io::flush_input();
+    }
+    break;
+
+    default:
+        break;
+    }
+}
+
+void ConfigState::draw()
+{
+    const int x1 = config::opt_values_x_pos_;
+
+    std::string str = "";
+
+    io::draw_text("-Options-",
+                  Panel::screen,
+                  P(0, 0),
+                  clr_white);
+
+    std::string font_disp_name = config::font_name_;
+
+    std::vector< std::pair< std::string, std::string > > labels =
+    {
+        {
+            "Enable audio",
+            config::is_audio_enabled_ ? "Yes" : "No"
+        },
+
+        {
+            "Play ambient sounds",
+            config::is_amb_audio_enabled_ ? "Yes" : "No"
+        },
+
+        {
+            "Use tile set",
+            config::is_tiles_mode_ ? "Yes" : "No"
+        },
+
+        {
+            "Font", font_disp_name
+        },
+
+        {
+            "Use light fade effect",
+            config::use_light_fade_effect_ ? "Yes" : "No"
+        },
+
+        {
+            "Fullscreen",
+            config::is_fullscr_ ? "Yes" : "No"
+        },
+
+        {
+            "Tiles mode wall symbol",
+            config::is_tiles_wall_full_square_ ? "Full square" : "Pseudo-3D"
+        },
+
+        {
+            "Text mode wall symbol",
+            config::is_text_mode_wall_full_square_ ? "Full square" : "Hash sign"
+        },
+
+        {
+            "Skip intro level",
+            config::is_intro_lvl_skipped_ ? "Yes" : "No"
+        },
+
+        {
+            "Any key confirms \"-More-\" prompts",
+            config::is_any_key_confirm_more_ ? "Yes" : "No"
+        },
+
+        {
+            "Warning when lighting explosive",
+            config::is_light_explosive_prompt_ ? "Yes" : "No"
+        },
+
+        {
+            "Ranged weapon melee attack warning",
+            config::is_ranged_wpn_meleee_prompt_ ? "Yes" : "No"
+        },
+
+        {
+            "Ranged weapon auto reload",
+            config::is_ranged_wpn_auto_reload_ ? "Yes" : "No"
+        },
+
+        {
+            "Projectile delay (ms)",
+            std::to_string(config::delay_projectile_draw_)
+        },
+
+        {
+            "Shotgun delay (ms)",
+            std::to_string(config::delay_shotgun_)
+        },
+
+        {
+            "Explosion delay (ms)",
+            std::to_string(config::delay_explosion_)
+        },
+
+        {
+            "Reset to defaults",
+            ""
+        }
+    };
+
+    for (size_t i = 0; i < labels.size(); ++i)
+    {
+        const auto& label = labels[i];
+
+        const std::string& str_l = label.first;
+        const std::string& str_r = label.second;
+
+        const Clr& clr =
+            browser_.y() == (int)i ?
+            clr_menu_highlight :
+            clr_menu_drk;
 
 
+        const int y = config::opt_y0_ + i;
 
+        io::draw_text(str_l,
+                          Panel::screen,
+                          P(0, y),
+                          clr);
+
+        if (str_r != "")
+        {
+            io::draw_text(":",
+                              Panel::screen,
+                              P(x1 - 2, y),
+                              clr);
+
+            io::draw_text(str_r,
+                              Panel::screen,
+                              P(x1, y),
+                              clr);
+        }
+    } // for each label
+
+    io::draw_text("[enter] to set option [space/esc] to exit",
+                  Panel::screen,
+                  P(0, 19),
+                  clr_white);
+
+    str =
+        "NOTE: Tile set requires a resolution 1280x720 or higher. Using "
+        "Text mode for smaller resolutions is recommended (fonts of different "
+        "sizes are available).";
+
+    const auto lines = text_format::split(str, screen_w);
+
+    int y = screen_h - lines.size();
+
+    for (const std::string& line : lines)
+    {
+        io::draw_text(line,
+                      Panel::screen,
+                      P(0, y),
+                      clr_gray);
+
+        ++y;
+    }
+}

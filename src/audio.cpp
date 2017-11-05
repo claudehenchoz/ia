@@ -6,8 +6,7 @@
 
 #include "init.hpp"
 #include "map.hpp"
-#include "render.hpp"
-#include "utils.hpp"
+#include "io.hpp"
 
 namespace audio
 {
@@ -17,89 +16,49 @@ namespace
 
 std::vector<Mix_Chunk*> audio_chunks_;
 
-size_t ms_at_sfx_played_[size_t(Sfx_id::END)];
+std::vector<Mix_Music*> mus_chunks_;
 
-int         cur_channel_            = 0;
-int         seconds_at_amb_played_  = -1;
+size_t ms_at_sfx_played_[(size_t)SfxId::END];
 
-int         nr_files_loaded_        = 0;
-const int   NR_FILES_TOT            = int(Sfx_id::END) - 2; //Subtracting AMB_START and AMB_END
+int current_channel_ = 0;
+int seconds_at_amb_played_ = -1;
 
-void load_audio_file(const Sfx_id sfx, const std::string& filename)
+int nr_files_loaded_ = 0;
+
+void load(const SfxId sfx, const std::string& filename)
 {
-    //Read events, so that we don't freeze the game while we loading sounds
+    // Sound already loaded?
+    if (audio_chunks_[(size_t)sfx])
+    {
+        return;
+    }
+
+    // Read events, so that we don't freeze the game while we loading sounds
     SDL_PumpEvents();
 
-    render::clear_screen();
+    const std::string file_rel_path = "res/audio/" + filename;
 
-    const std::string file_rel_path  = "audio/" + filename;
+    audio_chunks_[(size_t)sfx] = Mix_LoadWAV(file_rel_path.c_str());
 
-    const std::string nr_loaded_str = to_str(nr_files_loaded_) + "/" + to_str(NR_FILES_TOT) ;
-
-    render::draw_text("Loading audio file " + nr_loaded_str + " (" + file_rel_path + ")...",
-                      Panel::screen,
-                      P(0, 0),
-                      clr_white);
-
-    audio_chunks_[size_t(sfx)] = Mix_LoadWAV(file_rel_path.c_str());
-
-    if (!audio_chunks_[size_t(sfx)])
+    if (!audio_chunks_[(size_t)sfx])
     {
-        TRACE << "Problem loading audio file with name: "   << filename         << std::endl
-              << "Mix_GetError(): "                         << Mix_GetError()   << std::endl;
-        assert(false);
+        TRACE << "Problem loading audio file with name: "
+              << filename << std::endl
+              << "Mix_GetError(): "
+              << Mix_GetError()   << std::endl;
+        ASSERT(false);
     }
-
-    //Draw a loading bar
-    const int PCT_LOADED    = (nr_files_loaded_ * 100) / NR_FILES_TOT;
-    const int BAR_W_TOT     = 32;
-    const int BAR_W_L       = (BAR_W_TOT * PCT_LOADED) / 100;
-    const int BAR_W_R       = BAR_W_TOT - BAR_W_L;
-
-    const P bar_p(1, 2);
-
-    if (BAR_W_L > 0)
-    {
-        const std::string bar_l_str(BAR_W_L, '#');
-
-        render::draw_text(bar_l_str,
-                          Panel::screen,
-                          bar_p,
-                          clr_green);
-    }
-
-    if (BAR_W_R > 0)
-    {
-        const std::string bar_r_str(BAR_W_R, '-');
-
-        render::draw_text(bar_r_str,
-                          Panel::screen,
-                          P(bar_p.x + BAR_W_L, bar_p.y),
-                          clr_gray_drk);
-    }
-
-    render::draw_text("[",
-                      Panel::screen,
-                      P(bar_p.x - 1, bar_p.y),
-                      clr_white);
-
-    render::draw_text("]",
-                      Panel::screen,
-                      P(bar_p.x + BAR_W_TOT, bar_p.y),
-                      clr_white);
-
-    render::update_screen();
 
     ++nr_files_loaded_;
 }
 
-int next_channel(const int FROM)
+int next_channel(const int from)
 {
-    assert(FROM >= 0 && FROM < AUDIO_ALLOCATED_CHANNELS);
+    ASSERT(from >= 0 && from < audio_allocated_channels);
 
-    int ret = FROM + 1;
+    int ret = from + 1;
 
-    if (ret == AUDIO_ALLOCATED_CHANNELS)
+    if (ret == audio_allocated_channels)
     {
         ret = 0;
     }
@@ -107,13 +66,13 @@ int next_channel(const int FROM)
     return ret;
 }
 
-int free_channel(const int FROM)
+int find_free_channel(const int from)
 {
-    assert(FROM >= 0 && FROM < AUDIO_ALLOCATED_CHANNELS);
+    ASSERT(from >= 0 && from < audio_allocated_channels);
 
-    int ret = FROM;
+    int ret = from;
 
-    for (int i = 0; i < AUDIO_ALLOCATED_CHANNELS; ++i)
+    for (int i = 0; i < audio_allocated_channels; ++i)
     {
         ret = next_channel(ret);
 
@@ -127,7 +86,24 @@ int free_channel(const int FROM)
     return -1;
 }
 
-} //Namespace
+std::string amb_sfx_filename(const SfxId sfx)
+{
+    const int amb_nr = (int)sfx - (int)SfxId::AMB_START;
+
+    const std::string padding_str =
+        (amb_nr < 10) ? "00" :
+        (amb_nr < 100) ? "0" : "";
+
+    const std::string idx_str = std::to_string(amb_nr);
+
+    return
+        "amb_" +
+        padding_str +
+        idx_str +
+        ".ogg";
+}
+
+} // namespace
 
 void init()
 {
@@ -135,90 +111,102 @@ void init()
 
     cleanup();
 
-    if (config::is_audio_enabled())
+    if (!config::is_audio_enabled())
     {
-        audio_chunks_.resize(size_t(Sfx_id::END));
+        TRACE_FUNC_END;
 
-        //Monster sounds
-        load_audio_file(Sfx_id::dog_snarl,              "sfx_dog_snarl.ogg");
-        load_audio_file(Sfx_id::wolf_howl,              "sfx_wolf_howl.ogg");
-        load_audio_file(Sfx_id::hiss,                   "sfx_hiss.ogg");
-        load_audio_file(Sfx_id::zombie_growl,           "sfx_zombie_growl.ogg");
-        load_audio_file(Sfx_id::ghoul_growl,            "sfx_ghoul_growl.ogg");
-        load_audio_file(Sfx_id::ooze_gurgle,            "sfx_ooze_gurgle.ogg");
-        load_audio_file(Sfx_id::flapping_wings,         "sfx_flapping_wings.ogg");
-        load_audio_file(Sfx_id::ape,                    "sfx_ape.ogg");
-
-        //Weapon and attack sounds
-        load_audio_file(Sfx_id::hit_small,              "sfx_hit_small.ogg");
-        load_audio_file(Sfx_id::hit_medium,             "sfx_hit_medium.ogg");
-        load_audio_file(Sfx_id::hit_hard,               "sfx_hit_hard.ogg");
-        load_audio_file(Sfx_id::hit_corpse_break,       "sfx_hit_corpse_break.ogg");
-        load_audio_file(Sfx_id::miss_light,             "sfx_miss_light.ogg");
-        load_audio_file(Sfx_id::miss_medium,            "sfx_miss_medium.ogg");
-        load_audio_file(Sfx_id::miss_heavy,             "sfx_miss_heavy.ogg");
-        load_audio_file(Sfx_id::hit_sharp,              "sfx_hit_sharp.ogg");
-        load_audio_file(Sfx_id::pistol_fire,            "sfx_pistol_fire.ogg");
-        load_audio_file(Sfx_id::pistol_reload,          "sfx_pistol_reload.ogg");
-        load_audio_file(Sfx_id::shotgun_sawed_off_fire, "sfx_shotgun_sawed_off_fire.ogg");
-        load_audio_file(Sfx_id::shotgun_pump_fire,      "sfx_shotgun_pump_fire.ogg");
-        load_audio_file(Sfx_id::shotgun_reload,         "sfx_shotgun_reload.ogg");
-        load_audio_file(Sfx_id::machine_gun_fire,       "sfx_machine_gun_fire.ogg");
-        load_audio_file(Sfx_id::machine_gun_reload,     "sfx_machine_gun_reload.ogg");
-        load_audio_file(Sfx_id::mi_go_gun_fire,         "sfx_migo_gun.ogg");
-        load_audio_file(Sfx_id::spike_gun,              "sfx_spike_gun.ogg");
-        load_audio_file(Sfx_id::bite,                   "sfx_bite.ogg");
-
-        //Environment sounds
-        load_audio_file(Sfx_id::metal_clank,            "sfx_metal_clank.ogg");
-        load_audio_file(Sfx_id::ricochet,               "sfx_ricochet.ogg");
-        load_audio_file(Sfx_id::explosion,              "sfx_explosion.ogg");
-        load_audio_file(Sfx_id::explosion_molotov,      "sfx_explosion_molotov.ogg");
-        load_audio_file(Sfx_id::gas,                    "sfx_gas.ogg");
-        load_audio_file(Sfx_id::door_open,              "sfx_door_open.ogg");
-        load_audio_file(Sfx_id::door_close,             "sfx_door_close.ogg");
-        load_audio_file(Sfx_id::door_bang,              "sfx_door_bang.ogg");
-        load_audio_file(Sfx_id::door_break,             "sfx_door_break.ogg");
-        load_audio_file(Sfx_id::tomb_open,              "sfx_tomb_open.ogg");
-        load_audio_file(Sfx_id::fountain_drink,         "sfx_fountain_drink.ogg");
-        load_audio_file(Sfx_id::boss_voice1,            "sfx_boss_voice1.ogg");
-        load_audio_file(Sfx_id::boss_voice2,            "sfx_boss_voice2.ogg");
-
-        //User interface sounds
-        load_audio_file(Sfx_id::backpack,               "sfx_backpack.ogg");
-        load_audio_file(Sfx_id::pickup,                 "sfx_pickup.ogg");
-        load_audio_file(Sfx_id::lantern,                "sfx_electric_lantern.ogg");
-        load_audio_file(Sfx_id::potion_quaff,           "sfx_potion_quaff.ogg");
-        load_audio_file(Sfx_id::spell_generic,          "sfx_spell_generic.ogg");
-        load_audio_file(Sfx_id::spell_shield_break,     "sfx_spell_shield_break.ogg");
-        load_audio_file(Sfx_id::insanity_rise,          "sfx_insanity_rising.ogg");
-        load_audio_file(Sfx_id::glop,                   "sfx_glop.ogg");
-        load_audio_file(Sfx_id::death,                  "sfx_death.ogg");
-
-        int a = 1;
-
-        const int FIRST = int(Sfx_id::AMB_START) + 1;
-        const int LAST  = int(Sfx_id::AMB_END)   - 1;
-
-        for (int i = FIRST; i <= LAST; ++i)
-        {
-            const std::string padding_str   = (a < 10)    ? "00"  :
-                                              (a < 100)   ? "0"   : "";
-
-            const std::string idx_str       = to_str(a);
-
-            const std::string file_name = "amb_" + padding_str + idx_str + ".ogg";
-
-            load_audio_file(Sfx_id(i), file_name);
-
-            ++a;
-        }
-
-        load_audio_file(Sfx_id::mus_cthulhiana_Madness,
-                        "musica_cthulhiana-fragment-madness.ogg");
-
-        assert(nr_files_loaded_ == NR_FILES_TOT);
+        return;
     }
+
+    audio_chunks_.resize((size_t)SfxId::END);
+
+    for (size_t i = 0; i < audio_chunks_.size(); ++i)
+    {
+        audio_chunks_[i] = nullptr;
+    }
+
+    //
+    // Pre-load the action sound effects (ambient sounds are loaded on demand)
+    //
+
+    //
+    // Monster sounds
+    //
+    load(SfxId::dog_snarl, "sfx_dog_snarl.ogg");
+    load(SfxId::wolf_howl, "sfx_wolf_howl.ogg");
+    load(SfxId::hiss, "sfx_hiss.ogg");
+    load(SfxId::zombie_growl, "sfx_zombie_growl.ogg");
+    load(SfxId::ghoul_growl, "sfx_ghoul_growl.ogg");
+    load(SfxId::ooze_gurgle, "sfx_ooze_gurgle.ogg");
+    load(SfxId::flapping_wings, "sfx_flapping_wings.ogg");
+    load(SfxId::ape, "sfx_ape.ogg");
+
+    //
+    // Weapon and attack sounds
+    //
+    load(SfxId::hit_small, "sfx_hit_small.ogg");
+    load(SfxId::hit_medium, "sfx_hit_medium.ogg");
+    load(SfxId::hit_hard, "sfx_hit_hard.ogg");
+    load(SfxId::hit_corpse_break, "sfx_hit_corpse_break.ogg");
+    load(SfxId::miss_light, "sfx_miss_light.ogg");
+    load(SfxId::miss_medium, "sfx_miss_medium.ogg");
+    load(SfxId::miss_heavy, "sfx_miss_heavy.ogg");
+    load(SfxId::hit_sharp, "sfx_hit_sharp.ogg");
+    load(SfxId::pistol_fire, "sfx_pistol_fire.ogg");
+    load(SfxId::pistol_reload, "sfx_pistol_reload.ogg");
+    load(SfxId::shotgun_sawed_off_fire, "sfx_shotgun_sawed_off_fire.ogg");
+    load(SfxId::shotgun_pump_fire, "sfx_shotgun_pump_fire.ogg");
+    load(SfxId::shotgun_reload, "sfx_shotgun_reload.ogg");
+    load(SfxId::machine_gun_fire, "sfx_machine_gun_fire.ogg");
+    load(SfxId::machine_gun_reload, "sfx_machine_gun_reload.ogg");
+    load(SfxId::mi_go_gun_fire, "sfx_migo_gun.ogg");
+    load(SfxId::spike_gun, "sfx_spike_gun.ogg");
+    load(SfxId::bite, "sfx_bite.ogg");
+
+    //
+    // Environment sounds
+    //
+    load(SfxId::metal_clank, "sfx_metal_clank.ogg");
+    load(SfxId::ricochet, "sfx_ricochet.ogg");
+    load(SfxId::explosion, "sfx_explosion.ogg");
+    load(SfxId::explosion_molotov, "sfx_explosion_molotov.ogg");
+    load(SfxId::gas, "sfx_gas.ogg");
+    load(SfxId::door_open, "sfx_door_open.ogg");
+    load(SfxId::door_close, "sfx_door_close.ogg");
+    load(SfxId::door_bang, "sfx_door_bang.ogg");
+    load(SfxId::door_break, "sfx_door_break.ogg");
+    load(SfxId::tomb_open, "sfx_tomb_open.ogg");
+    load(SfxId::fountain_drink, "sfx_fountain_drink.ogg");
+    load(SfxId::boss_voice1, "sfx_boss_voice1.ogg");
+    load(SfxId::boss_voice2, "sfx_boss_voice2.ogg");
+    load(SfxId::chains, "sfx_chains.ogg");
+    load(SfxId::glop, "sfx_glop.ogg");
+    load(SfxId::lever_pull, "sfx_lever_pull.ogg");
+    load(SfxId::monolith, "sfx_monolith.ogg");
+
+    //
+    // User interface sounds
+    //
+    load(SfxId::backpack, "sfx_backpack.ogg");
+    load(SfxId::pickup, "sfx_pickup.ogg");
+    load(SfxId::lantern, "sfx_electric_lantern.ogg");
+    load(SfxId::potion_quaff, "sfx_potion_quaff.ogg");
+    load(SfxId::spell_generic, "sfx_spell_generic.ogg");
+    load(SfxId::spell_shield_break, "sfx_spell_shield_break.ogg");
+    load(SfxId::insanity_rise, "sfx_insanity_rising.ogg");
+    load(SfxId::death, "sfx_death.ogg");
+    load(SfxId::menu_browse, "sfx_menu_browse.ogg");
+    load(SfxId::menu_select, "sfx_menu_select.ogg");
+
+    ASSERT(nr_files_loaded_ == (int)SfxId::AMB_START);
+
+    //
+    // Load music
+    //
+    mus_chunks_.resize((size_t)MusId::END);
+
+    mus_chunks_[(size_t)MusId::cthulhiana_madness] =
+        Mix_LoadMUS("res/audio/musica_cthulhiana-fragment-madness.ogg");
 
     TRACE_FUNC_END;
 }
@@ -227,7 +215,7 @@ void cleanup()
 {
     TRACE_FUNC_BEGIN;
 
-    for (size_t i = 0; i < size_t(Sfx_id::END); ++i)
+    for (size_t i = 0; i < (size_t)SfxId::END; ++i)
     {
         ms_at_sfx_played_[i] = 0;
     }
@@ -239,55 +227,78 @@ void cleanup()
 
     audio_chunks_.clear();
 
-    cur_channel_            =  0;
-    seconds_at_amb_played_  = -1;
+    for (Mix_Music* chunk : mus_chunks_)
+    {
+        Mix_FreeMusic(chunk);
+    }
+
+    mus_chunks_.clear();
+
+    current_channel_ =  0;
+    seconds_at_amb_played_ = -1;
 
     nr_files_loaded_ = 0;
 
     TRACE_FUNC_END;
 }
 
-int play(const Sfx_id sfx, const int VOL_PCT_TOT, const int VOL_PCT_L)
+void play(const SfxId sfx,
+          const int vol_pct_tot,
+          const int vol_pct_l)
 {
-    if (
-        !audio_chunks_.empty()      &&
-        sfx != Sfx_id::AMB_START    &&
-        sfx != Sfx_id::AMB_END      &&
-        sfx != Sfx_id::END          &&
-        !config::is_bot_playing())
+    if (audio_chunks_.empty() ||
+        (sfx == SfxId::AMB_START) ||
+        (sfx == SfxId::END) ||
+        config::is_bot_playing())
     {
-        const int       FREE_CHANNEL    = free_channel(cur_channel_);
-        const size_t    MS_NOW          = SDL_GetTicks();
-        size_t&         ms_last         = ms_at_sfx_played_[size_t(sfx)];
-        const size_t    MS_DIFF         = MS_NOW - ms_last;
-
-        if (FREE_CHANNEL >= 0 && MS_DIFF >= MIN_MS_BETWEEN_SAME_SFX)
-        {
-            cur_channel_ = FREE_CHANNEL;
-
-            const int VOL_TOT   = (255 * VOL_PCT_TOT)   / 100;
-            const int VOL_L     = (VOL_PCT_L * VOL_TOT) / 100;
-            const int VOL_R     = VOL_TOT - VOL_L;
-
-            Mix_SetPanning(cur_channel_, VOL_L, VOL_R);
-
-            Mix_PlayChannel(cur_channel_, audio_chunks_[size_t(sfx)], 0);
-
-            ms_last = SDL_GetTicks();
-
-            return cur_channel_;
-        }
+        return;
     }
 
-    return -1;
+    // Is this an ambient sound which has not yet been loaded?
+    if (((int)sfx > (int)SfxId::AMB_START) &&
+        !audio_chunks_[(size_t)sfx])
+    {
+        load(sfx, amb_sfx_filename(sfx));
+    }
+
+    const int free_channel = find_free_channel(current_channel_);
+
+    const size_t ms_now = SDL_GetTicks();
+
+    size_t& ms_last = ms_at_sfx_played_[(size_t)sfx];
+
+    const size_t ms_diff = ms_now - ms_last;
+
+    if ((free_channel >= 0) &&
+        (ms_diff >= min_ms_between_same_sfx))
+    {
+        current_channel_ = free_channel;
+
+        const int vol_tot = (255 * vol_pct_tot) / 100;
+        const int vol_l = (vol_pct_l * vol_tot) / 100;
+        const int vol_r = vol_tot - vol_l;
+
+        Mix_SetPanning(current_channel_,
+                       vol_l,
+                       vol_r);
+
+        Mix_PlayChannel(current_channel_,
+                        audio_chunks_[(size_t)sfx],
+                        0);
+
+        ms_last = SDL_GetTicks();
+    }
 }
 
-void play(const Sfx_id sfx, const Dir dir, const int DISTANCE_PCT)
+void play(const SfxId sfx,
+          const Dir dir,
+          const int distance_pct)
 {
-    if (!audio_chunks_.empty() && dir != Dir::END)
+    if (!audio_chunks_.empty() &&
+        (dir != Dir::END))
     {
-        //The distance value is scaled down to avoid too much volume degradation
-        const int VOL_PCT_TOT = 100 - ((DISTANCE_PCT * 2) / 3);
+        // The distance value is scaled down to avoid too much volume reduction
+        const int vol_pct_tot = 100 - ((distance_pct * 2) / 3);
 
         int vol_pct_l = 0;
 
@@ -334,37 +345,66 @@ void play(const Sfx_id sfx, const Dir dir, const int DISTANCE_PCT)
             break;
         }
 
-        play(sfx, VOL_PCT_TOT, vol_pct_l);
+        play(sfx,
+             vol_pct_tot,
+             vol_pct_l);
     }
 }
 
-void try_play_amb(const int ONE_IN_N_CHANCE_TO_PLAY)
+void try_play_amb(const int one_in_n_chance_to_play)
 {
-    if (!audio_chunks_.empty() && rnd::one_in(ONE_IN_N_CHANCE_TO_PLAY))
+    //
+    // NOTE: The ambient sound effect will be loaded by play(), if not already
+    //       loaded (only the action sound effects are pre-loaded)
+    //
+
+    if (!config::is_amb_audio_enabled())
     {
-        const int SECONDS_NOW               = time(nullptr);
-        const int TIME_REQ_BETWEEN_AMB_SFX  = 20;
+        return;
+    }
 
-        if ((SECONDS_NOW - TIME_REQ_BETWEEN_AMB_SFX) > seconds_at_amb_played_)
+    if (!audio_chunks_.empty() &&
+        rnd::one_in(one_in_n_chance_to_play))
+    {
+        const int seconds_now = time(nullptr);
+        const int time_req_between_amb_sfx = 25;
+
+        if ((seconds_now - time_req_between_amb_sfx) > seconds_at_amb_played_)
         {
-            seconds_at_amb_played_ = SECONDS_NOW;
+            seconds_at_amb_played_ = seconds_now;
 
-            const int       VOL_PCT     = rnd::one_in(5) ? rnd::range(50,  99) : 100;
-            const int       FIRST_INT   = int(Sfx_id::AMB_START) + 1;
-            const int       LAST_INT    = int(Sfx_id::AMB_END)   - 1;
-            const Sfx_id    sfx         = Sfx_id(rnd::range(FIRST_INT, LAST_INT));
+            const int vol_pct = rnd::range(15, 100);
 
-            play(sfx , VOL_PCT);
+            const int first_int = (int)SfxId::AMB_START + 1;
+
+            const int last_int = (int)SfxId::END - 1;
+
+            const SfxId sfx = (SfxId)rnd::range(first_int, last_int);
+
+            play(sfx , vol_pct);
         }
     }
 }
 
-void fade_out_channel(const int CHANNEL_NR)
+void play_music(const MusId mus)
 {
-    if (!audio_chunks_.empty())
+    // Only play if not already playing music
+    if (!mus_chunks_.empty() &&
+        !Mix_PlayingMusic())
     {
-        Mix_FadeOutChannel(CHANNEL_NR, 5000);
+        auto* const chunk = mus_chunks_[(size_t)mus];
+
+        // Loop forever
+        Mix_PlayMusic(chunk, -1);
     }
 }
 
-} //Audio
+void fade_out_music()
+{
+    if (!mus_chunks_.empty())
+    {
+        Mix_FadeOutMusic(2000);
+    }
+}
+
+} // audio
